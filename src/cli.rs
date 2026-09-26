@@ -111,10 +111,7 @@ fn bundle(args: Cli) -> Result<()> {
     let mut core_bundle = None;
     let mut module_bundles = Vec::new();
     for target in targets {
-        println!(
-            "Downloading {}@{} and inlining its modules...",
-            target.package, target.version
-        );
+        println!("downloading {}@{}...", target.package, target.version);
         let entry_url = package_url(&target.package, &target.version, target.external_core)?;
         let bundle =
             download_single_file_bundle(&entry_url, target.external_core, &args.zenfs_version)?;
@@ -137,7 +134,7 @@ fn bundle(args: Cli) -> Result<()> {
     staged_file
         .persist(&output_file)
         .with_context(|| format!("could not write {}", output_file.display()))?;
-    println!("Combined ZenFS bundle written to {}", output_file.display());
+    println!("written to {}", output_file.display());
     Ok(())
 }
 
@@ -194,7 +191,7 @@ fn normalize_module(module: &str) -> Result<ZenFsModule> {
 fn combine_bundles(core_bundle: String, module_bundles: Vec<(String, String)>) -> Result<String> {
     let core_names = collect_export_names(&core_bundle)?;
     let mut output = String::from(
-        r#"/* Combined by renfs. Bundles are gzip-compressed and loaded from Blob modules. */
+        r#"/* Combined by renfs. */
 async function __renfsLoad(payload, coreUrl) {
   const binary = atob(payload);
   const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
