@@ -287,6 +287,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "examplify"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ed4857a9ce3d3913b87813002af15c9c6697bd4690e682324bf284d23479344"
+dependencies = [
+ "console_log",
+ "env_logger",
+ "js-sys",
+ "log",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -747,12 +762,10 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "clap",
- "console_log",
  "dirs",
- "env_logger",
+ "examplify",
  "flate2",
  "js-sys",
- "log",
  "regex",
  "tempfile",
  "tracing",
@@ -996,6 +1009,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio"
+version = "1.53.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+dependencies = [
+ "pin-project-lite",
+]
+
+[[package]]
 name = "tracing"
 version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1150,6 +1172,17 @@ dependencies = [
  "rustversion",
  "wasm-bindgen-macro",
  "wasm-bindgen-shared",
+]
+
+[[package]]
+name = "wasm-bindgen-futures"
+version = "0.4.79"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3cbab34de2d982e9b48e18d216d04c4a6f641066ff19ffb699980f591ee3610e"
+dependencies = [
+ "js-sys",
+ "tokio",
+ "wasm-bindgen",
 ]
 
 [[package]]

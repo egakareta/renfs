@@ -1,15 +1,20 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(target_arch = "wasm32")]
-    console_log::init_with_level(log::Level::Debug).unwrap();
-
-    #[cfg(not(target_arch = "wasm32"))]
-    env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Debug)
-        .init();
+    examplify::init().with_log_level(examplify::log::LevelFilter::Info);
 
     let app_dir = renfs::app_dir("test")?;
-    app_dir.write_file("test.txt", b"hello")?;
-    log::info!("{}", app_dir.read_text("test.txt")?);
+
+    let counter_file = "runs.txt";
+
+    let count = match app_dir.read_text(counter_file) {
+        Ok(text) => text.trim().parse::<u64>().unwrap_or(0),
+        Err(_) => 0,
+    };
+
+    let count = count + 1;
+
+    app_dir.write_file(counter_file, count.to_string().as_bytes())?;
+
+    examplify::log::info!("Runs: {}", count);
 
     Ok(())
 }

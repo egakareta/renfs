@@ -13,19 +13,7 @@
         }
       }
     </script>
-    <script>
-      (async () => {
-        const { configure } = await import("@zenfs/core");
-        const { IndexedDB } = await import("@zenfs/dom");
-
-        await configure({
-          mounts: {
-            "/": IndexedDB,
-          },
-        });
-      })();
-    </script>
-    <link data-trunk rel="rust" href="../Cargo.toml" />
+    <link data-trunk rel="rust" href="../Cargo.toml" data-initializer="./init.mjs" />
     <link data-trunk rel="copy-file" href="./bin/zenfs.js" />
     <style>
       html,
