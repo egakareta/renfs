@@ -1,5 +1,6 @@
 fn main() {
-    let _ = console_log::init_with_level(log::Level::Debug);
+    #[cfg(target_arch = "wasm32")]
+    console_log::init_with_level(log::Level::Debug).unwrap();
 
     renfs::write_file("test.txt", b"hello").unwrap();
     log::info!(
