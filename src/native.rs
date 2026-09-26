@@ -1,5 +1,42 @@
 use std::{fs, io, path::Path};
 
+pub fn app_dir(name: &str) -> io::Result<String> {
+    let base = dirs::data_local_dir().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "could not determine the application data directory",
+        )
+    })?;
+
+    app_dir_in(&base, name)
+}
+
+fn app_dir_in(base: &Path, name: &str) -> io::Result<String> {
+    let name_path = Path::new(name);
+    if name.contains('/')
+        || name.contains('\\')
+        || !matches!(
+            name_path.components().next(),
+            Some(std::path::Component::Normal(_))
+        )
+        || name_path.components().count() != 1
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "application name must be a single path component",
+        ));
+    }
+
+    let path = base.join(name_path);
+    fs::create_dir_all(&path)?;
+    path.into_os_string().into_string().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "application data directory path is not valid UTF-8",
+        )
+    })
+}
+
 pub fn exists(path: &str) -> io::Result<bool> {
     Path::new(path).try_exists()
 }
@@ -50,6 +87,30 @@ pub fn remove_file(path: &str) -> io::Result<()> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn app_dir_creates_a_named_directory_under_the_data_directory() {
+        let temp = tempdir().unwrap();
+
+        let path = app_dir_in(temp.path(), "example-app").unwrap();
+
+        assert_eq!(path, temp.path().join("example-app").to_str().unwrap());
+        assert!(Path::new(&path).is_dir());
+    }
+
+    #[test]
+    fn app_dir_rejects_path_components() {
+        let temp = tempdir().unwrap();
+
+        assert_eq!(
+            app_dir_in(temp.path(), "../outside").unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            app_dir_in(temp.path(), "").unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
 
     #[test]
     fn filesystem_operations_use_the_native_filesystem() {

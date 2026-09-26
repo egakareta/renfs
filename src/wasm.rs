@@ -31,6 +31,20 @@ fn mkdir_options(recursive: bool) -> Result<JsValue, JsValue> {
     Ok(options.into())
 }
 
+#[wasm_bindgen(js_name = appDir)]
+pub fn app_dir(name: &str) -> Result<String, JsValue> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+        return Err(JsValue::from_str(
+            "application name must be a single path component",
+        ));
+    }
+
+    let path = format!("/app/{name}");
+    let options = mkdir_options(true)?;
+    call_fs("mkdirSync", &[JsValue::from_str(&path), options])?;
+    Ok(path)
+}
+
 #[wasm_bindgen(js_name = exists)]
 pub fn exists(path: &str) -> Result<bool, JsValue> {
     call_fs("existsSync", &[JsValue::from_str(path)])?
