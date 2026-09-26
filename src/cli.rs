@@ -157,13 +157,23 @@ fn bundle(args: Cli) -> Result<()> {
         let (cached_before, downloaded_before) = cache.counts();
         let bundle = download_single_file_bundle(&entry_url, &options)?;
         let (cached, downloaded) = cache.counts();
-        tracing::info!(
-            "{}@{}: {} from cache, {} downloaded",
-            target.package,
-            target.version,
-            cached - cached_before,
-            downloaded - downloaded_before,
-        );
+        if downloaded == 0 {
+            tracing::debug!(
+                "{}@{}: {} cached, no new downloads",
+                target.package,
+                target.version,
+                cached - cached_before
+            );
+        } else {
+            tracing::info!(
+                "{}@{}: {} cached, {} downloaded",
+                target.package,
+                target.version,
+                cached - cached_before,
+                downloaded - downloaded_before,
+            );
+        }
+
         let label = esm_sh_module_label(&bundle)
             .unwrap_or_else(|| format!("{}@{}", target.package, target.version));
         if let Some(namespace) = target.namespace {
@@ -191,7 +201,7 @@ fn bundle(args: Cli) -> Result<()> {
     staged_file
         .persist(&output_file)
         .with_context(|| format!("could not write {}", output_file.display()))?;
-    tracing::info!("written to {}", output_file.display());
+    tracing::debug!("written to {}", output_file.display());
     Ok(())
 }
 
