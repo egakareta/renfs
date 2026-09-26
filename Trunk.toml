@@ -1,4 +1,9 @@
 [build]
 target = "examples/index.html"
-dist = "examples/dist"
+dist = "examples/bin/dist"
 example = "simple"
+
+# [[hooks]]
+# stage = "pre_build"
+# command = "renfs"
+# command_arguments = ["bundle", "examples/bin", "--force"]

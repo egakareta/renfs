@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>renfs</title>
     <link data-trunk rel="rust" href="../Cargo.toml" />
+    <link data-trunk rel="copy-file" href="./bin/zenfs.js" />
+    <script type="importmap">
+      {
+        "imports": {
+          "@zenfs/core": "./zenfs.js"
+        }
+      }
+    </script>
     <style>
       html,
       body {
