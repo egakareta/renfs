@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use clap::{Args, Parser, Subcommand};
+use clap::Parser;
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use regex::{Captures, Regex};
 use tempfile::NamedTempFile;
@@ -20,21 +20,9 @@ use url::Url;
     about = "Bundle ZenFS for browser applications"
 )]
 struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Debug, Subcommand)]
-enum Commands {
-    /// Download ZenFS and bundle it as a browser-ready ESM file.
-    Bundle(BundleArgs),
-}
-
-#[derive(Debug, Args)]
-struct BundleArgs {
-    /// Directory to write the combined zenfs.js bundle into.
-    #[arg(value_name = "DIRECTORY")]
-    output_dir: PathBuf,
+    /// File path to write the combined ZenFS bundle into.
+    #[arg(value_name = "OUTPUT_PATH")]
+    output_path: PathBuf,
 
     /// Additional @zenfs modules to bundle (e.g. dom, archives).
     /// Use name@version to select a module version.
@@ -48,29 +36,40 @@ struct BundleArgs {
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
-    match cli.command {
-        Commands::Bundle(args) => bundle(args),
-    }
+    bundle(cli)
 }
 
-fn bundle(args: BundleArgs) -> Result<()> {
+fn bundle(args: Cli) -> Result<()> {
     ensure!(
         !args.zenfs_version.trim().is_empty(),
         "ZenFS version cannot be empty"
     );
 
-    fs::create_dir_all(&args.output_dir).with_context(|| {
-        format!(
-            "could not create output directory {}",
-            args.output_dir.display()
-        )
-    })?;
-    let output_dir = fs::canonicalize(&args.output_dir).with_context(|| {
-        format!(
-            "could not resolve output directory {}",
-            args.output_dir.display()
-        )
-    })?;
+    let output_path = &args.output_path;
+    let path_str = output_path.to_string_lossy();
+    ensure!(!path_str.trim().is_empty(), "output path cannot be empty");
+    ensure!(
+        !path_str.ends_with('/') && !path_str.ends_with('\\'),
+        "output path '{}' appears to be a directory; please specify a file path",
+        output_path.display()
+    );
+    ensure!(
+        !output_path.is_dir(),
+        "output path '{}' is a directory; please specify a file path",
+        output_path.display()
+    );
+
+    let parent = output_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+
+    fs::create_dir_all(parent)
+        .with_context(|| format!("could not create output directory {}", parent.display()))?;
+    let parent = fs::canonicalize(parent)
+        .with_context(|| format!("could not resolve output directory {}", parent.display()))?;
+    let file_name = output_path.file_name().context("invalid output path")?;
+    let output_file = parent.join(file_name);
     let mut modules = args
         .modules
         .iter()
@@ -130,13 +129,8 @@ fn bundle(args: BundleArgs) -> Result<()> {
         core_bundle.context("the core bundle was not generated")?,
         module_bundles,
     )?;
-    let output_file = output_dir.join("zenfs.js");
-    let mut staged_file = NamedTempFile::new_in(&output_dir).with_context(|| {
-        format!(
-            "could not create temporary file in {}",
-            output_dir.display()
-        )
-    })?;
+    let mut staged_file = NamedTempFile::new_in(&parent)
+        .with_context(|| format!("could not create temporary file in {}", parent.display()))?;
     staged_file
         .write_all(bundle.as_bytes())
         .context("could not write the generated ZenFS bundle")?;
@@ -796,5 +790,53 @@ mod tests {
         assert!(bundle.contains("__renfs_module_0.namespace[\"exists\"]"));
         assert!(bundle.contains("as __zenfs_dom_exists"));
         assert!(bundle.contains("__renfs_module_0.namespace[\"IndexedDB\"]"));
+    }
+
+    #[test]
+    fn cli_parses_output_path_and_options() {
+        let args = Cli::try_parse_from([
+            "renfs",
+            "custom/path/bundle.js",
+            "--module",
+            "dom@2.7.6",
+            "--zenfs-version",
+            "2.7.6",
+        ])
+        .unwrap();
+        assert_eq!(args.output_path, PathBuf::from("custom/path/bundle.js"));
+        assert_eq!(args.modules, vec!["dom@2.7.6"]);
+        assert_eq!(args.zenfs_version, "2.7.6");
+    }
+
+    #[test]
+    fn cli_requires_output_path() {
+        assert!(Cli::try_parse_from(["renfs"]).is_err());
+    }
+
+    #[test]
+    fn bundle_rejects_empty_or_directory_output_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir_path = temp_dir.path().to_path_buf();
+
+        let args = Cli {
+            output_path: dir_path,
+            modules: vec![],
+            zenfs_version: "latest".to_owned(),
+        };
+        assert!(bundle(args).is_err());
+
+        let args = Cli {
+            output_path: PathBuf::from("some/dir/"),
+            modules: vec![],
+            zenfs_version: "latest".to_owned(),
+        };
+        assert!(bundle(args).is_err());
+
+        let args = Cli {
+            output_path: PathBuf::from(""),
+            modules: vec![],
+            zenfs_version: "latest".to_owned(),
+        };
+        assert!(bundle(args).is_err());
     }
 }
