@@ -566,6 +566,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "console_log",
+ "flate2",
  "js-sys",
  "log",
  "regex",

@@ -1,13 +1,14 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::Write,
+    io::{Read, Write},
     path::PathBuf,
 };
 
 use anyhow::{Context, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use clap::{Args, Parser, Subcommand};
+use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use regex::{Captures, Regex};
 use tempfile::NamedTempFile;
 use url::Url;
@@ -128,7 +129,7 @@ fn bundle(args: BundleArgs) -> Result<()> {
     let bundle = combine_bundles(
         core_bundle.context("the core bundle was not generated")?,
         module_bundles,
-    );
+    )?;
     let output_file = output_dir.join("zenfs.js");
     let mut staged_file = NamedTempFile::new_in(&output_dir).with_context(|| {
         format!(
@@ -196,24 +197,241 @@ fn normalize_module(module: &str) -> Result<ZenFsModule> {
     })
 }
 
-fn combine_bundles(core_bundle: String, module_bundles: Vec<(String, String)>) -> String {
-    let core_url = as_data_url(&core_bundle);
-    let mut output = format!(
-        "/* Combined by renfs */\nexport * from \"{core_url}\";\nexport {{ default }} from \"{core_url}\";\n"
-    );
-    for (namespace, bundle) in module_bundles {
-        let module_url = as_data_url(&bundle);
-        output.push_str(&format!("export * from \"{module_url}\";\n"));
-        output.push_str(&format!("export * as {namespace} from \"{module_url}\";\n"));
+fn combine_bundles(core_bundle: String, module_bundles: Vec<(String, String)>) -> Result<String> {
+    let core_names = collect_export_names(&core_bundle)?;
+    let mut output = String::from(
+        r#"/* Combined by renfs. Bundles are gzip-compressed and loaded from Blob modules. */
+async function __renfsLoad(payload, coreUrl) {
+  const binary = atob(payload);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+  const source = await new Response(stream).text();
+  const url = await __renfsPrepare(source, coreUrl);
+  return { url, namespace: await import(url) };
+}
+async function __renfsPrepare(source, coreUrl) {
+  const dependencies = [...source.matchAll(/data:(text\/javascript|application\/javascript\+gzip);base64,([A-Za-z0-9+/=]+)/g)];
+  for (const match of dependencies) {
+    const specifier = match[0];
+    let dependencyUrl = __renfsModuleCache.get(specifier);
+    if (!dependencyUrl) {
+      const binary = atob(match[2]);
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      let dependencySource;
+      if (match[1] === "application/javascript+gzip") {
+        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+        dependencySource = await new Response(stream).text();
+      } else {
+        dependencySource = new TextDecoder().decode(bytes);
+      }
+      dependencyUrl = await __renfsPrepare(dependencySource, coreUrl);
+      __renfsModuleCache.set(specifier, dependencyUrl);
     }
-    output
+    source = source.replaceAll(specifier, dependencyUrl);
+  }
+  if (coreUrl) {
+    source = source.replace(
+      /(\b(?:from|import)\b\s*(?:\(\s*)?)(["'])@zenfs\/core\2/g,
+      (_match, prefix) => prefix + JSON.stringify(coreUrl),
+    );
+  }
+  const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+  return url;
+}
+const __renfsModuleCache = new Map();
+"#,
+    );
+    let core_payload = gzip_base64(&core_bundle)?;
+    output.push_str(&format!(
+        "const __renfs_core = await __renfsLoad(\"{core_payload}\");\n"
+    ));
+
+    let mut exported_names = HashSet::new();
+    let mut export_id = 0;
+    append_named_exports(
+        &mut output,
+        "__renfs_core",
+        core_names,
+        "__zenfs_core",
+        true,
+        &mut exported_names,
+        &mut export_id,
+    );
+
+    for (module_index, (namespace, bundle)) in module_bundles.into_iter().enumerate() {
+        let module_names = collect_export_names(&bundle)?;
+        let module_payload = gzip_base64(&bundle)?;
+        let module_var = format!("__renfs_module_{module_index}");
+        output.push_str(&format!(
+            "const {module_var} = await __renfsLoad(\"{module_payload}\", __renfs_core.url);\n"
+        ));
+        append_named_exports(
+            &mut output,
+            &module_var,
+            module_names,
+            &namespace,
+            false,
+            &mut exported_names,
+            &mut export_id,
+        );
+
+        let mut namespace_export = namespace.clone();
+        let mut alias_suffix = 2;
+        while exported_names.contains(&namespace_export) {
+            namespace_export = format!("{namespace}_{alias_suffix}");
+            alias_suffix += 1;
+        }
+        exported_names.insert(namespace_export.clone());
+        let binding = format!("__renfs_export_{export_id}");
+        export_id += 1;
+        output.push_str(&format!(
+            "const {binding} = {module_var}.namespace;\nexport {{ {binding} as {namespace_export} }};\n"
+        ));
+    }
+    Ok(output)
 }
 
+fn append_named_exports(
+    output: &mut String,
+    module_var: &str,
+    names: HashSet<String>,
+    namespace: &str,
+    is_core: bool,
+    exported_names: &mut HashSet<String>,
+    export_id: &mut usize,
+) {
+    let mut names = names.into_iter().collect::<Vec<_>>();
+    names.sort();
+    let mut alias_suffix = 2;
+    for name in names {
+        let alias = if is_core || (name != "default" && exported_names.insert(name.clone())) {
+            name.clone()
+        } else {
+            let mut alias = format!("{namespace}_{name}");
+            while exported_names.contains(&alias) {
+                alias = format!("{namespace}_{name}_{alias_suffix}");
+                alias_suffix += 1;
+            }
+            exported_names.insert(alias.clone());
+            alias
+        };
+        let binding = format!("__renfs_export_{}", *export_id);
+        *export_id += 1;
+        output.push_str(&format!(
+            "const {binding} = {module_var}.namespace[{name:?}];\nexport {{ {binding} as {alias} }};\n"
+        ));
+        exported_names.insert(alias);
+    }
+}
+
+fn gzip_base64(source: &str) -> Result<String> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
+    encoder
+        .write_all(source.as_bytes())
+        .context("could not compress a ZenFS module")?;
+    Ok(STANDARD.encode(
+        encoder
+            .finish()
+            .context("could not finish module compression")?,
+    ))
+}
+
+fn collect_export_names(source: &str) -> Result<HashSet<String>> {
+    let mut names = HashSet::new();
+    let mut visited = HashSet::new();
+    collect_export_names_inner(source, &mut names, &mut visited)?;
+    Ok(names)
+}
+
+fn collect_export_names_inner(
+    source: &str,
+    names: &mut HashSet<String>,
+    visited: &mut HashSet<String>,
+) -> Result<()> {
+    for captures in export_list_pattern().captures_iter(source) {
+        for item in captures.name("list").unwrap().as_str().split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            let exported = item
+                .rsplit_once(" as ")
+                .map_or(item, |(_, exported)| exported.trim());
+            names.insert(exported.to_owned());
+        }
+    }
+
+    for captures in export_all_pattern().captures_iter(source) {
+        if let Some(namespace) = captures.name("name") {
+            names.insert(namespace.as_str().to_owned());
+            continue;
+        }
+
+        let specifier = captures.name("specifier").unwrap().as_str();
+        let Some(module) = decode_embedded_module(specifier)? else {
+            // External imports such as @zenfs/core are bundled separately.
+            continue;
+        };
+        if !visited.insert(specifier.to_owned()) {
+            continue;
+        }
+        let mut child_names = HashSet::new();
+        collect_export_names_inner(&module, &mut child_names, visited)?;
+        names.extend(child_names.into_iter().filter(|name| name != "default"));
+    }
+
+    for captures in export_declaration_pattern().captures_iter(source) {
+        names.insert(captures.name("name").unwrap().as_str().to_owned());
+    }
+    if source.contains("export default") {
+        names.insert("default".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn as_data_url(source: &str) -> String {
     format!(
         "data:text/javascript;base64,{}",
         STANDARD.encode(source.as_bytes())
     )
+}
+
+fn as_gzip_data_url(source: &str) -> Result<String> {
+    Ok(format!(
+        "data:application/javascript+gzip;base64,{}",
+        gzip_base64(source)?
+    ))
+}
+
+fn decode_embedded_module(specifier: &str) -> Result<Option<String>> {
+    let (encoded, compressed) = if let Some(encoded) =
+        specifier.strip_prefix("data:text/javascript;base64,")
+    {
+        (encoded, false)
+    } else if let Some(encoded) = specifier.strip_prefix("data:application/javascript+gzip;base64,")
+    {
+        (encoded, true)
+    } else {
+        return Ok(None);
+    };
+
+    let bytes = STANDARD
+        .decode(encoded)
+        .with_context(|| format!("invalid embedded JavaScript module {specifier}"))?;
+    let bytes = if compressed {
+        let mut decoder = GzDecoder::new(bytes.as_slice());
+        let mut decoded = Vec::new();
+        decoder
+            .read_to_end(&mut decoded)
+            .with_context(|| format!("could not decompress embedded module {specifier}"))?;
+        decoded
+    } else {
+        bytes
+    };
+    String::from_utf8(bytes)
+        .map(Some)
+        .with_context(|| format!("embedded JavaScript module is not UTF-8: {specifier}"))
 }
 
 fn package_url(package: &str, version: &str, external_core: bool) -> Result<Url> {
@@ -271,7 +489,7 @@ fn inline_module(
     );
     active_modules.remove(&key);
     let inlined = result?;
-    let data_url = as_data_url(&inlined);
+    let data_url = as_gzip_data_url(&inlined)?;
     inlined_modules.insert(key, data_url.clone());
     Ok(data_url)
 }
@@ -408,6 +626,33 @@ fn source_map_pattern() -> &'static Regex {
     })
 }
 
+fn export_list_pattern() -> &'static Regex {
+    static PATTERN: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r"\bexport\s*\{(?P<list>[^}]*)\}").expect("static export list pattern is valid")
+    })
+}
+
+fn export_all_pattern() -> &'static Regex {
+    static PATTERN: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(
+            r#"\bexport\s*\*\s*(?:as\s+(?P<name>[A-Za-z_$][\w$]*))?\s*from\s*["'](?P<specifier>[^"']+)["']"#,
+        )
+        .expect("static export-all pattern is valid")
+    })
+}
+
+fn export_declaration_pattern() -> &'static Regex {
+    static PATTERN: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(
+            r"\bexport\s+(?:(?:async\s+)?(?:function|class)|const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)",
+        )
+        .expect("static export declaration pattern is valid")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,30 +747,54 @@ mod tests {
     }
 
     #[test]
-    fn combined_bundle_reexports_core_and_additional_modules() {
+    fn combined_bundle_reexports_each_module_once() {
+        let core = "export const fs = {}; export default fs;".to_owned();
+        let dom = "import { fs } from \"@zenfs/core\"; export const IndexedDB = fs;".to_owned();
+        let core_payload = gzip_base64(&core).unwrap();
+        let dom_payload = gzip_base64(&dom).unwrap();
+        let bundle =
+            combine_bundles(core.clone(), vec![("__zenfs_dom".to_owned(), dom.clone())]).unwrap();
+
+        assert!(bundle.contains("__renfs_core.namespace[\"default\"]"));
+        assert!(bundle.contains("__renfs_core.namespace[\"fs\"]"));
+        assert!(bundle.contains("__renfs_module_0.namespace[\"IndexedDB\"]"));
+        assert_eq!(bundle.matches(&core_payload).count(), 1);
+        assert_eq!(bundle.matches(&dom_payload).count(), 1);
+        assert!(bundle.contains("as __zenfs_dom"));
+    }
+
+    #[test]
+    fn export_names_are_collected_through_embedded_star_exports() {
+        let child = "export { alpha as renamed, beta }; export default {};";
+        assert_eq!(
+            decode_embedded_module(&as_data_url(child))
+                .unwrap()
+                .as_deref(),
+            Some(child)
+        );
+        let child_url = as_gzip_data_url(child).unwrap();
+        let root =
+            format!("export * from \"{child_url}\"; export {{ default }} from \"{child_url}\";");
+
+        let names = collect_export_names(&root).unwrap();
+        assert!(names.contains("renamed"));
+        assert!(names.contains("beta"));
+        assert!(names.contains("default"));
+    }
+
+    #[test]
+    fn duplicate_export_names_receive_module_prefixed_aliases() {
         let bundle = combine_bundles(
-            "export const fs = {}; export default fs;".to_owned(),
+            "export const exists = true;".to_owned(),
             vec![(
                 "__zenfs_dom".to_owned(),
-                "import { fs } from \"@zenfs/core\"; export const IndexedDB = fs;".to_owned(),
+                "export const exists = false; export const IndexedDB = exists;".to_owned(),
             )],
-        );
+        )
+        .unwrap();
 
-        assert!(bundle.contains("export * from \"data:text/javascript;base64,"));
-        assert!(bundle.contains("export { default } from \"data:text/javascript;base64,"));
-        assert!(bundle.contains("export * as __zenfs_dom from \"data:text/javascript;base64,"));
-
-        let encoded_module = bundle
-            .lines()
-            .filter(|line| line.starts_with("export * from") && line.contains("data:"))
-            .nth(1)
-            .unwrap();
-        let module_url = encoded_module
-            .split("data:text/javascript;base64,")
-            .nth(1)
-            .unwrap()
-            .trim_end_matches("\";");
-        let module_source = String::from_utf8(STANDARD.decode(module_url).unwrap()).unwrap();
-        assert!(module_source.contains("from \"@zenfs/core\""));
+        assert!(bundle.contains("__renfs_module_0.namespace[\"exists\"]"));
+        assert!(bundle.contains("as __zenfs_dom_exists"));
+        assert!(bundle.contains("__renfs_module_0.namespace[\"IndexedDB\"]"));
     }
 }
