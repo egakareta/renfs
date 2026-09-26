@@ -35,8 +35,8 @@ struct BundleArgs {
     #[arg(value_name = "DIRECTORY")]
     output_dir: PathBuf,
 
-    /// Additional @zenfs modules to bundle (for example: dom, archives).
-    /// May be repeated; use name@version to select a module version.
+    /// Additional @zenfs modules to bundle (e.g. dom, archives).
+    /// Use name@version to select a module version.
     #[arg(long = "module", value_name = "MODULE")]
     modules: Vec<String>,
 
