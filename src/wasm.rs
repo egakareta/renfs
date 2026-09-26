@@ -2,6 +2,10 @@ use js_sys::{Array, Function, Object, Reflect, Uint8Array};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
+pub fn invalid_path_error(message: &str) -> JsValue {
+    JsValue::from_str(message)
+}
+
 #[wasm_bindgen(module = "@zenfs/core")]
 extern "C" {
     #[wasm_bindgen(thread_local_v2, js_name = fs)]

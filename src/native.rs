@@ -1,5 +1,9 @@
 use std::{fs, io, path::Path};
 
+pub fn invalid_path_error(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message.to_owned())
+}
+
 pub fn app_dir(name: &str) -> io::Result<String> {
     let base = dirs::data_local_dir().ok_or_else(|| {
         io::Error::new(
