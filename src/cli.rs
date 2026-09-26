@@ -1,13 +1,14 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
     fs,
+    hash::{Hash, Hasher},
     io::{Read, Write},
     path::PathBuf,
 };
 
 use anyhow::{Context, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use clap::Parser;
+use clap::{CommandFactory, Parser, error::ErrorKind};
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use regex::{Captures, Regex};
 use tempfile::NamedTempFile;
@@ -32,10 +33,25 @@ struct Cli {
     /// @zenfs/core version, dist-tag, or semver range to download.
     #[arg(long, default_value = "latest")]
     zenfs_version: String,
+
+    /// Ignore cached modules and refetch.
+    /// Pinned versions are always reused from cache.
+    #[arg(long)]
+    upgrade: bool,
 }
 
 pub fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            if err.kind() == ErrorKind::MissingRequiredArgument {
+                Cli::command().print_help().ok();
+                std::process::exit(0);
+            }
+
+            err.exit();
+        }
+    };
     bundle(cli)
 }
 
@@ -108,14 +124,20 @@ fn bundle(args: Cli) -> Result<()> {
         namespace: Some(module.namespace),
     }));
 
+    let cache = ModuleCache::new();
     let mut core_bundle = None;
     let mut core_label = None;
     let mut module_bundles = Vec::new();
     for target in targets {
         println!("downloading {}@{}...", target.package, target.version);
         let entry_url = package_url(&target.package, &target.version, target.external_core)?;
-        let bundle =
-            download_single_file_bundle(&entry_url, target.external_core, &args.zenfs_version)?;
+        let options = DownloadOptions {
+            external_core: target.external_core,
+            core_version: &args.zenfs_version,
+            cache: &cache,
+            refresh: should_refresh(args.upgrade, &target.version),
+        };
+        let bundle = download_single_file_bundle(&entry_url, &options)?;
         let label = esm_sh_module_label(&bundle)
             .unwrap_or_else(|| format!("{}@{}", target.package, target.version));
         if let Some(namespace) = target.namespace {
@@ -164,6 +186,55 @@ struct ModuleBundle {
     namespace: String,
     source: String,
     label: String,
+}
+
+struct DownloadOptions<'a> {
+    external_core: bool,
+    core_version: &'a str,
+    cache: &'a ModuleCache,
+    refresh: bool,
+}
+
+/// A persistent cache of raw esm.sh module sources, keyed by download URL.
+///
+/// Recursive esm.sh imports are resolved to concrete URLs before they are
+/// downloaded, so caching at the URL level keeps every transitive module
+/// reusable. Only moving versions need `--upgrade`.
+struct ModuleCache {
+    directory: PathBuf,
+}
+
+impl ModuleCache {
+    fn new() -> Self {
+        Self::in_directory(std::env::temp_dir().join("renfs-cache"))
+    }
+
+    fn in_directory(directory: PathBuf) -> Self {
+        Self { directory }
+    }
+
+    fn get(&self, url: &Url) -> Option<String> {
+        fs::read_to_string(self.path_for(url)).ok()
+    }
+
+    fn put(&self, url: &Url, source: &str) {
+        if fs::create_dir_all(&self.directory).is_err() {
+            return;
+        }
+        let Ok(mut staged_file) = NamedTempFile::new_in(&self.directory) else {
+            return;
+        };
+        if staged_file.write_all(source.as_bytes()).is_err() {
+            return;
+        }
+        let _ = staged_file.persist(self.path_for(url));
+    }
+
+    fn path_for(&self, url: &Url) -> PathBuf {
+        let mut hasher = DefaultHasher::new();
+        url.as_str().hash(&mut hasher);
+        self.directory.join(format!("{:016x}.js", hasher.finish()))
+    }
 }
 
 fn normalize_module(module: &str) -> Result<ZenFsModule> {
@@ -449,6 +520,10 @@ fn decode_embedded_module(specifier: &str) -> Result<Option<String>> {
         .with_context(|| format!("embedded JavaScript module is not UTF-8: {specifier}"))
 }
 
+fn should_refresh(upgrade: bool, version: &str) -> bool {
+    upgrade && version == "latest"
+}
+
 fn package_url(package: &str, version: &str, external_core: bool) -> Result<Url> {
     let mut url = Url::parse(&format!(
         "https://esm.sh/{package}@{version}?bundle&target=es2022"
@@ -459,21 +534,16 @@ fn package_url(package: &str, version: &str, external_core: bool) -> Result<Url>
     Ok(url)
 }
 
-fn download_single_file_bundle(
-    entry_url: &Url,
-    external_core: bool,
-    core_version: &str,
-) -> Result<String> {
+fn download_single_file_bundle(entry_url: &Url, options: &DownloadOptions<'_>) -> Result<String> {
     let mut inlined_modules = HashMap::new();
     let mut active_modules = HashSet::new();
-    let source = download_module_source(entry_url)?;
+    let source = download_module_source(entry_url, options.cache, options.refresh)?;
     rewrite_imports(
         entry_url,
         &source,
         &mut inlined_modules,
         &mut active_modules,
-        external_core,
-        core_version,
+        options,
     )
 }
 
@@ -488,8 +558,7 @@ fn inline_module(
     url: &Url,
     inlined_modules: &mut HashMap<String, String>,
     active_modules: &mut HashSet<String>,
-    external_core: bool,
-    core_version: &str,
+    options: &DownloadOptions<'_>,
 ) -> Result<String> {
     let key = url.as_str().to_owned();
     if let Some(module) = inlined_modules.get(&key) {
@@ -500,15 +569,8 @@ fn inline_module(
         "esm.sh returned a cyclic module graph; cannot inline {url} into one file"
     );
 
-    let source = download_module_source(url)?;
-    let result = rewrite_imports(
-        url,
-        &source,
-        inlined_modules,
-        active_modules,
-        external_core,
-        core_version,
-    );
+    let source = download_module_source(url, options.cache, options.refresh)?;
+    let result = rewrite_imports(url, &source, inlined_modules, active_modules, options);
     active_modules.remove(&key);
     let inlined = result?;
     let data_url = as_gzip_data_url(&inlined)?;
@@ -516,20 +578,25 @@ fn inline_module(
     Ok(data_url)
 }
 
-fn download_module_source(url: &Url) -> Result<String> {
+fn download_module_source(url: &Url, cache: &ModuleCache, refresh: bool) -> Result<String> {
     ensure!(
         url.scheme() == "https" && url.host_str() == Some("esm.sh"),
         "refusing to download unexpected module URL {url}"
     );
+    if !refresh && let Some(source) = cache.get(url) {
+        return Ok(source);
+    }
     let mut response = ureq::get(url.as_str())
         .header("User-Agent", concat!("renfs/", env!("CARGO_PKG_VERSION")))
         .header("Accept", "application/javascript")
         .call()
         .with_context(|| format!("failed to download JavaScript module {url}"))?;
-    response
+    let source = response
         .body_mut()
         .read_to_string()
-        .with_context(|| format!("failed to read JavaScript module {url}"))
+        .with_context(|| format!("failed to read JavaScript module {url}"))?;
+    cache.put(url, &source);
+    Ok(source)
 }
 
 fn rewrite_imports(
@@ -537,9 +604,10 @@ fn rewrite_imports(
     source: &str,
     inlined_modules: &mut HashMap<String, String>,
     active_modules: &mut HashSet<String>,
-    external_core: bool,
-    core_version: &str,
+    options: &DownloadOptions<'_>,
 ) -> Result<String> {
+    let external_core = options.external_core;
+    let core_version = options.core_version;
     let replacements = import_pattern()
         .captures_iter(source)
         .map(|captures| {
@@ -560,13 +628,7 @@ fn rewrite_imports(
                 dependency.fragment().is_none(),
                 "unsupported fragment on module import {dependency}"
             );
-            let data_url = inline_module(
-                &dependency,
-                inlined_modules,
-                active_modules,
-                external_core,
-                core_version,
-            )?;
+            let data_url = inline_module(&dependency, inlined_modules, active_modules, options)?;
             Ok((specifier.to_owned(), data_url))
         })
         .collect::<Result<HashMap<_, _>>>()?;
@@ -679,6 +741,12 @@ fn export_declaration_pattern() -> &'static Regex {
 mod tests {
     use super::*;
 
+    fn test_cache() -> (tempfile::TempDir, ModuleCache) {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = ModuleCache::in_directory(directory.path().to_path_buf());
+        (directory, cache)
+    }
+
     #[test]
     fn module_names_accept_shorthand_and_package_names() {
         let dom = normalize_module("dom").unwrap();
@@ -703,20 +771,50 @@ mod tests {
     }
 
     #[test]
+    fn upgrade_only_refreshes_latest_versions() {
+        assert!(should_refresh(true, "latest"));
+        assert!(!should_refresh(false, "latest"));
+        assert!(!should_refresh(true, "2.7.6"));
+        assert!(!should_refresh(true, "^2.7.0"));
+    }
+
+    #[test]
+    fn module_cache_round_trips_sources_per_url() {
+        let (_cache_dir, cache) = test_cache();
+        let core = Url::parse("https://esm.sh/@zenfs/core@latest").unwrap();
+        let dom = Url::parse("https://esm.sh/@zenfs/dom@latest").unwrap();
+
+        assert!(cache.get(&core).is_none());
+        cache.put(&core, "first");
+        assert_eq!(cache.get(&core).as_deref(), Some("first"));
+        assert!(cache.get(&dom).is_none());
+
+        cache.put(&core, "second");
+        assert_eq!(cache.get(&core).as_deref(), Some("second"));
+        assert_ne!(cache.path_for(&core), cache.path_for(&dom));
+    }
+
+    #[test]
     fn additional_modules_keep_core_imports_external() {
         let url =
             Url::parse("https://esm.sh/@zenfs/dom@2.7.6?bundle&external=%40zenfs%2Fcore").unwrap();
         let source = "import { fs } from \"@zenfs/core\";\nexport { fs };";
         let mut inlined_modules = HashMap::new();
         let mut active_modules = HashSet::new();
+        let (_cache_dir, cache) = test_cache();
+        let options = DownloadOptions {
+            external_core: true,
+            core_version: "2.7.6",
+            cache: &cache,
+            refresh: false,
+        };
 
         let rewritten = rewrite_imports(
             &url,
             source,
             &mut inlined_modules,
             &mut active_modules,
-            true,
-            "2.7.6",
+            &options,
         )
         .unwrap();
 
@@ -729,14 +827,20 @@ mod tests {
         let source = "export * from \"/@zenfs/core@2.7.6/es2022/core.bundle.mjs\";";
         let mut inlined_modules = HashMap::new();
         let mut active_modules = HashSet::new();
+        let (_cache_dir, cache) = test_cache();
+        let options = DownloadOptions {
+            external_core: true,
+            core_version: "2.7.6",
+            cache: &cache,
+            refresh: false,
+        };
 
         let rewritten = rewrite_imports(
             &url,
             source,
             &mut inlined_modules,
             &mut active_modules,
-            true,
-            "2.7.6",
+            &options,
         )
         .unwrap();
 
@@ -889,6 +993,7 @@ mod tests {
             output_path: dir_path,
             modules: vec![],
             zenfs_version: "latest".to_owned(),
+            upgrade: false,
         };
         assert!(bundle(args).is_err());
 
@@ -896,6 +1001,7 @@ mod tests {
             output_path: PathBuf::from("some/dir/"),
             modules: vec![],
             zenfs_version: "latest".to_owned(),
+            upgrade: false,
         };
         assert!(bundle(args).is_err());
 
@@ -903,6 +1009,7 @@ mod tests {
             output_path: PathBuf::from(""),
             modules: vec![],
             zenfs_version: "latest".to_owned(),
+            upgrade: false,
         };
         assert!(bundle(args).is_err());
     }
