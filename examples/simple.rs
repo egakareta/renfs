@@ -1,3 +1,7 @@
+//! If you cloned the repo, you can run this with:
+//! - `cargo run --example simple` (native)
+//! - `trunk serve --example simple` (web)
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     examplify::init().with_log_level(examplify::log::LevelFilter::Info);
 
