@@ -6,22 +6,43 @@ edition = "2024"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["cli"]
+cli = [
+  "dep:anyhow",
+  "dep:base64",
+  "dep:clap",
+  "dep:flate2",
+  "dep:regex",
+  "dep:tempfile",
+  "dep:tracing",
+  "dep:tracing-subscriber",
+  "dep:ureq",
+  "dep:url",
+]
+
+[[bin]]
+name = "renfs"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [dev-dependencies]
 console_log = "1"
 log = "0.4"
+tempfile = "3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-anyhow = "1"
-base64 = "0.22"
-clap = { version = "4", features = ["derive"] }
-flate2 = "1"
-regex = "1"
-tempfile = "3"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ureq = "3"
-url = "2"
+anyhow = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+flate2 = { version = "1", optional = true }
+regex = { version = "1", optional = true }
+tempfile = { version = "3", optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+ureq = { version = "3", optional = true }
+url = { version = "2", optional = true }
