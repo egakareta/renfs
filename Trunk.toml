@@ -1,4 +1,4 @@
 [build]
-target = "assets/index.html"
+target = "examples/index.html"
 dist = "examples/dist"
 example = "simple"
