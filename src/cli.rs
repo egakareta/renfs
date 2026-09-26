@@ -1,8 +1,9 @@
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet, hash_map::DefaultHasher},
     fs,
     hash::{Hash, Hasher},
-    io::{Read, Write},
+    io::{IsTerminal, Read, Write},
     path::PathBuf,
 };
 
@@ -12,6 +13,7 @@ use clap::{CommandFactory, Parser, error::ErrorKind};
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use regex::{Captures, Regex};
 use tempfile::NamedTempFile;
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
 
 #[derive(Debug, Parser)]
@@ -41,6 +43,7 @@ struct Cli {
 }
 
 pub fn run() -> Result<()> {
+    init_logging()?;
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => {
@@ -53,6 +56,21 @@ pub fn run() -> Result<()> {
         }
     };
     bundle(cli)
+}
+
+fn init_logging() -> Result<()> {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(std::io::stdout().is_terminal())
+                .with_target(false)
+                .with_level(true)
+                .compact(),
+        )
+        .try_init()
+        .context("error initializing logging")
 }
 
 fn bundle(args: Cli) -> Result<()> {
@@ -129,7 +147,6 @@ fn bundle(args: Cli) -> Result<()> {
     let mut core_label = None;
     let mut module_bundles = Vec::new();
     for target in targets {
-        println!("downloading {}@{}...", target.package, target.version);
         let entry_url = package_url(&target.package, &target.version, target.external_core)?;
         let options = DownloadOptions {
             external_core: target.external_core,
@@ -137,7 +154,16 @@ fn bundle(args: Cli) -> Result<()> {
             cache: &cache,
             refresh: should_refresh(args.upgrade, &target.version),
         };
+        let (cached_before, downloaded_before) = cache.counts();
         let bundle = download_single_file_bundle(&entry_url, &options)?;
+        let (cached, downloaded) = cache.counts();
+        tracing::info!(
+            "{}@{}: {} from cache, {} downloaded",
+            target.package,
+            target.version,
+            cached - cached_before,
+            downloaded - downloaded_before,
+        );
         let label = esm_sh_module_label(&bundle)
             .unwrap_or_else(|| format!("{}@{}", target.package, target.version));
         if let Some(namespace) = target.namespace {
@@ -165,7 +191,7 @@ fn bundle(args: Cli) -> Result<()> {
     staged_file
         .persist(&output_file)
         .with_context(|| format!("could not write {}", output_file.display()))?;
-    println!("written to {}", output_file.display());
+    tracing::info!("written to {}", output_file.display());
     Ok(())
 }
 
@@ -202,6 +228,8 @@ struct DownloadOptions<'a> {
 /// reusable. Only moving versions need `--upgrade`.
 struct ModuleCache {
     directory: PathBuf,
+    hits: Cell<usize>,
+    downloads: Cell<usize>,
 }
 
 impl ModuleCache {
@@ -210,14 +238,21 @@ impl ModuleCache {
     }
 
     fn in_directory(directory: PathBuf) -> Self {
-        Self { directory }
+        Self {
+            directory,
+            hits: Cell::new(0),
+            downloads: Cell::new(0),
+        }
     }
 
     fn get(&self, url: &Url) -> Option<String> {
-        fs::read_to_string(self.path_for(url)).ok()
+        let source = fs::read_to_string(self.path_for(url)).ok()?;
+        self.hits.set(self.hits.get() + 1);
+        Some(source)
     }
 
     fn put(&self, url: &Url, source: &str) {
+        self.downloads.set(self.downloads.get() + 1);
         if fs::create_dir_all(&self.directory).is_err() {
             return;
         }
@@ -228,6 +263,11 @@ impl ModuleCache {
             return;
         }
         let _ = staged_file.persist(self.path_for(url));
+    }
+
+    /// Cumulative `(cache hits, downloads)` across this process.
+    fn counts(&self) -> (usize, usize) {
+        (self.hits.get(), self.downloads.get())
     }
 
     fn path_for(&self, url: &Url) -> PathBuf {
@@ -785,12 +825,18 @@ mod tests {
         let dom = Url::parse("https://esm.sh/@zenfs/dom@latest").unwrap();
 
         assert!(cache.get(&core).is_none());
+        assert_eq!(cache.counts(), (0, 0));
         cache.put(&core, "first");
+        assert_eq!(cache.counts(), (0, 1));
         assert_eq!(cache.get(&core).as_deref(), Some("first"));
+        assert_eq!(cache.counts(), (1, 1));
         assert!(cache.get(&dom).is_none());
+        assert_eq!(cache.counts(), (1, 1));
 
         cache.put(&core, "second");
+        assert_eq!(cache.counts(), (1, 2));
         assert_eq!(cache.get(&core).as_deref(), Some("second"));
+        assert_eq!(cache.counts(), (2, 2));
         assert_ne!(cache.path_for(&core), cache.path_for(&dom));
     }
 
