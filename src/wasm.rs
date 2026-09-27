@@ -138,6 +138,15 @@ pub fn remove_file(path: &str) -> Result<(), JsValue> {
     Ok(())
 }
 
+#[wasm_bindgen(js_name = rename)]
+pub fn rename(from: &str, to: &str) -> Result<(), JsValue> {
+    call_fs(
+        "renameSync",
+        &[JsValue::from_str(from), JsValue::from_str(to)],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +199,20 @@ mod tests {
 
         write_file(&path, &contents).unwrap();
         assert_eq!(read_file(&path).unwrap(), contents);
+    }
+
+    #[wasm_bindgen_test]
+    fn rename_moves_files() {
+        let directory = test_path("rename");
+        create_dir_all(&directory).unwrap();
+        let source = format!("{directory}/source.txt");
+        let destination = format!("{directory}/destination.txt");
+
+        write_text(&source, "renamed content").unwrap();
+        rename(&source, &destination).unwrap();
+
+        assert!(!exists(&source).unwrap());
+        assert_eq!(read_text(&destination).unwrap(), "renamed content");
     }
 
     #[wasm_bindgen_test]

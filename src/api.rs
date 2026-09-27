@@ -33,15 +33,7 @@ impl std::error::Error for Error {}
 pub type Result<T> = std::result::Result<T, Error>;
 
 fn invalid_path_error(message: &str) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        implementation::invalid_path_error(message)
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        implementation::invalid_path_error(message).into()
-    }
+    implementation::invalid_path_error(message).into()
 }
 
 /// A filesystem directory whose operations use paths relative to its root.
@@ -93,30 +85,22 @@ impl Directory {
 struct RootFileSystem;
 
 macro_rules! define_file_api {
-    ($( $operation:ident($( $arg:ident : $arg_type:ty ),*) -> $output:ty; )*) => {
+    ($( $operation:ident([$($path:ident),+ $(,)?] $(, $arg:ident : $arg_type:ty)* $(,)?) -> $output:ty; )*) => {
         pub trait FileOps {
             fn resolve_path(&self, path: &str) -> Result<String>;
 
             $(
-                fn $operation(&self, path: &str $(, $arg: $arg_type)*) -> Result<$output> {
-                    let path = self.resolve_path(path)?;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        implementation::$operation(&path $(, $arg)*)
-                    }
-
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        Ok(implementation::$operation(&path $(, $arg)*)?)
-                    }
+                fn $operation(&self, $($path: &str),* $(, $arg: $arg_type)*) -> Result<$output> {
+                    $(let $path = self.resolve_path($path)?;)*
+                    Ok(implementation::$operation($(&$path,)* $($arg),*)?)
                 }
             )*
         }
 
         impl Directory {
             $(
-                pub fn $operation(&self, path: &str $(, $arg: $arg_type)*) -> Result<$output> {
-                    FileOps::$operation(self, path $(, $arg)*)
+                pub fn $operation(&self, $($path: &str),* $(, $arg: $arg_type)*) -> Result<$output> {
+                    FileOps::$operation(self, $($path,)* $($arg),*)
                 }
             )*
         }
@@ -125,8 +109,8 @@ macro_rules! define_file_api {
             use super::{FileOps, Result, RootFileSystem};
 
             $(
-                pub fn $operation(path: &str $(, $arg: $arg_type)*) -> Result<$output> {
-                    FileOps::$operation(&RootFileSystem, path $(, $arg)*)
+                pub fn $operation($($path: &str),* $(, $arg: $arg_type)*) -> Result<$output> {
+                    FileOps::$operation(&RootFileSystem, $($path,)* $($arg),*)
                 }
             )*
         }
@@ -134,16 +118,17 @@ macro_rules! define_file_api {
 }
 
 define_file_api! {
-    append_text(contents: &str) -> ();
-    exists() -> bool;
-    read_text() -> String;
-    write_text(contents: &str) -> ();
-    read_file() -> Vec<u8>;
-    write_file(contents: &[u8]) -> ();
-    create_dir() -> ();
-    create_dir_all() -> ();
-    read_dir() -> Vec<String>;
-    remove_file() -> ();
+    append_text([path], contents: &str) -> ();
+    exists([path]) -> bool;
+    read_text([path]) -> String;
+    write_text([path], contents: &str) -> ();
+    read_file([path]) -> Vec<u8>;
+    write_file([path], contents: &[u8]) -> ();
+    create_dir([path]) -> ();
+    create_dir_all([path]) -> ();
+    read_dir([path]) -> Vec<String>;
+    remove_file([path]) -> ();
+    rename([from, to]) -> ();
 }
 
 impl FileOps for Directory {
@@ -196,12 +181,34 @@ mod tests {
     }
 
     #[test]
+    fn rename_is_available_on_fs_and_directory() {
+        let temp = tempdir().unwrap();
+        let dir = Directory::new(temp.path()).unwrap();
+        dir.write_text("before.txt", "from directory").unwrap();
+        dir.rename("before.txt", "after.txt").unwrap();
+        assert!(!dir.exists("before.txt").unwrap());
+        assert_eq!(dir.read_text("after.txt").unwrap(), "from directory");
+
+        let root_before = temp.path().join("after.txt");
+        let root_after = temp.path().join("root-renamed.txt");
+        fs::rename(root_before.to_str().unwrap(), root_after.to_str().unwrap()).unwrap();
+        assert!(!root_before.exists());
+        assert!(root_after.exists());
+    }
+
+    #[test]
     fn directory_rejects_paths_that_escape_its_root() {
         let temp = tempdir().unwrap();
         let dir = Directory::new(temp.path()).unwrap();
 
         assert_eq!(
             dir.write_text("../outside.txt", "nope").unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            dir.rename("inside.txt", "../outside.txt")
+                .unwrap_err()
+                .kind(),
             std::io::ErrorKind::InvalidInput
         );
     }

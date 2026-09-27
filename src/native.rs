@@ -95,6 +95,10 @@ pub fn remove_file(path: &str) -> io::Result<()> {
     fs::remove_file(path)
 }
 
+pub fn rename(from: &str, to: &str) -> io::Result<()> {
+    fs::rename(from, to)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,8 +151,14 @@ mod tests {
                 .contains(&"hello.txt".to_owned())
         );
 
-        remove_file(file_path).unwrap();
+        let renamed_file = nested_dir.join("renamed.txt");
+        let renamed_path = renamed_file.to_str().unwrap();
+        rename(file_path, renamed_path).unwrap();
         assert!(!exists(file_path).unwrap());
+        assert_eq!(read_text(renamed_path).unwrap(), "bytes");
+
+        remove_file(renamed_path).unwrap();
+        assert!(!exists(renamed_path).unwrap());
     }
 
     #[test]
