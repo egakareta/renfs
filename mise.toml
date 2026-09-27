@@ -4,7 +4,13 @@
 "github:wasm-bindgen/wasm-pack" = "latest"
 lefthook = "latest"
 oxfmt = "latest"
-rust = { version = "latest", components = ["clippy", "rustfmt", "rust-src"] }
+rust = { version = "latest", components = [
+  "clippy",
+  "rustfmt",
+  "rust-src",
+], targets = [
+  "wasm32-unknown-unknown",
+] }
 
 [hooks]
 postinstall = ["lefthook install"]
