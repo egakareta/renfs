@@ -1,6 +1,7 @@
 [tools]
 "github:Unreal-Works/cmdshim" = "latest"
 "github:trunk-rs/trunk" = "latest"
+"github:wasm-bindgen/wasm-pack" = "latest"
 lefthook = "latest"
 oxfmt = "latest"
 rust = { version = "latest", components = ["clippy", "rustfmt", "rust-src"] }
