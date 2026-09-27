@@ -75,6 +75,8 @@ macro_rules! define_file_handle_api {
                 $async_body.await
             }
 
+            $(#[$documentation])*
+            #[doc = ""]
             #[doc = concat!("Synchronously performs `", stringify!($operation), "`.")]
             pub fn $sync_operation($($argument: $argument_type),*) -> Result<$output> {
                 $sync_body
@@ -502,6 +504,8 @@ macro_rules! define_file_api {
                     implementation_result!(implementation::$operation_async($(&$async_path,)* $($async_arg),*).await)
                 }
 
+                $(#[$async_documentation])*
+                #[doc = ""]
                 #[doc = concat!("Synchronously performs `", stringify!($operation_async), "`.")]
                 fn $sync_operation(&self, $($async_path: &str),* $(, $async_arg: $async_arg_type)*) -> Result<$async_output> {
                     $(let $async_path = self.resolve_path($async_path)?;)*
@@ -541,6 +545,8 @@ macro_rules! define_file_api {
                     FileOps::$operation_async(self, $($async_path,)* $($async_arg),*).await
                 }
 
+                $(#[$async_documentation])*
+                #[doc = ""]
                 #[doc = concat!("Synchronously performs `", stringify!($operation_async), "`.")]
                 pub fn $sync_operation(&self, $($async_path: &str),* $(, $async_arg: $async_arg_type)*) -> Result<$async_output> {
                     FileOps::$sync_operation(self, $($async_path,)* $($async_arg),*)
@@ -593,6 +599,8 @@ macro_rules! define_file_api {
                     FileOps::$operation_async(&RootFileSystem, $($async_path,)* $($async_arg),*).await
                 }
 
+                $(#[$async_documentation])*
+                #[doc = ""]
                 #[doc = concat!("Synchronously performs `", stringify!($operation_async), "`.")]
                 pub fn $sync_operation($($async_path: &str),* $(, $async_arg: $async_arg_type)*) -> Result<$async_output> {
                     FileOps::$sync_operation(&RootFileSystem, $($async_path,)* $($async_arg),*)
