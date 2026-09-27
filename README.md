@@ -22,6 +22,31 @@ For convenience, [std::fs](https://doc.rust-lang.org/std/fs/index.html) is used 
 
 Please read the [examples](https://github.com/egakareta/renfs/tree/master/examples) for guidance.
 
+### Configure a browser filesystem
+
+For most use cases, configure ZenFS before Rust application initialization.
+[Trunk](https://github.com/trunk-rs/trunk) makes this easy with its `data-initializer` attribute:
+
+```html
+<link data-trunk rel="rust" data-initializer="./init.mjs" />
+```
+
+where `./init.mjs` looks like:
+
+```js
+import { configure, InMemory } from "@zenfs/core";
+import { IndexedDB } from "@zenfs/dom";
+
+await configure({
+  mounts: {
+    "/": IndexedDB,
+    "/tmp": InMemory,
+  },
+});
+
+export default () => ({});
+```
+
 ## License
 
 Licensed under the [MIT License](https://github.com/egakareta/renfs/blob/master/LICENSE).
