@@ -561,6 +561,11 @@ macro_rules! define_file_api {
                 Blob, File, FileOps, Metadata, OpenOptions, Result, RootFileSystem,
             };
 
+            #[cfg(target_arch = "wasm32")]
+            use wasm_bindgen::JsValue;
+            #[cfg(target_arch = "wasm32")]
+            use crate::implementation;
+
             /// Check whether a path exists, without checking permissions.
             pub const F_OK: u32 = 0;
             /// Check whether a path is readable.
@@ -569,6 +574,153 @@ macro_rules! define_file_api {
             pub const W_OK: u32 = 2;
             /// Check whether a path is executable.
             pub const X_OK: u32 = 1;
+
+            /// Configures ZenFS with the supplied configuration, including asynchronous backends.
+            #[cfg(target_arch = "wasm32")]
+            pub async fn configure(configuration: &JsValue) -> Result<()> {
+                implementation::configure(configuration).await?;
+                Ok(())
+            }
+
+            /// Configures ZenFS synchronously. This fails if a configured backend requires async setup.
+            #[cfg(target_arch = "wasm32")]
+            pub fn configure_sync(configuration: &JsValue) -> Result<()> {
+                implementation::configure_sync(configuration)?;
+                Ok(())
+            }
+
+            /// Configures ZenFS with one backend mounted at `/`, including asynchronous backends.
+            #[cfg(target_arch = "wasm32")]
+            pub async fn configure_single(configuration: &JsValue) -> Result<()> {
+                implementation::configure_single(configuration).await?;
+                Ok(())
+            }
+
+            /// Configures ZenFS synchronously with one backend mounted at `/`.
+            #[cfg(target_arch = "wasm32")]
+            pub fn configure_single_sync(configuration: &JsValue) -> Result<()> {
+                implementation::configure_single_sync(configuration)?;
+                Ok(())
+            }
+
+            /// Applies shared configuration options to an already-created filesystem.
+            #[cfg(target_arch = "wasm32")]
+            pub fn configure_file_system(
+                filesystem: &JsValue,
+                configuration: &JsValue,
+            ) -> Result<()> {
+                implementation::configure_file_system(filesystem, configuration)?;
+                Ok(())
+            }
+
+            /// Resolves a backend configuration asynchronously into a filesystem instance.
+            #[cfg(target_arch = "wasm32")]
+            pub async fn resolve_mount_config(configuration: &JsValue) -> Result<JsValue> {
+                implementation::resolve_mount_config(configuration)
+                    .await
+                    .map_err(Into::into)
+            }
+
+            /// Resolves a backend configuration synchronously into a filesystem instance.
+            #[cfg(target_arch = "wasm32")]
+            pub fn resolve_mount_config_sync(configuration: &JsValue) -> Result<JsValue> {
+                implementation::resolve_mount_config_sync(configuration).map_err(Into::into)
+            }
+
+            /// Resolves a remote filesystem asynchronously using a channel and mount configuration.
+            #[cfg(target_arch = "wasm32")]
+            pub async fn resolve_remote_mount(
+                channel: &JsValue,
+                configuration: &JsValue,
+            ) -> Result<JsValue> {
+                implementation::resolve_remote_mount(channel, configuration)
+                    .await
+                    .map_err(Into::into)
+            }
+
+            /// Mounts an existing filesystem at `mount_point`.
+            #[cfg(target_arch = "wasm32")]
+            pub fn mount(mount_point: &str, filesystem: &JsValue) -> Result<()> {
+                implementation::mount(mount_point, filesystem)?;
+                Ok(())
+            }
+
+            /// Unmounts the filesystem at `mount_point`.
+            #[cfg(target_arch = "wasm32")]
+            pub fn umount(mount_point: &str) -> Result<()> {
+                implementation::umount(mount_point)?;
+                Ok(())
+            }
+
+            /// Returns ZenFS's map of mount points to filesystem instances.
+            #[cfg(target_arch = "wasm32")]
+            pub fn mounts() -> JsValue {
+                implementation::mounts()
+            }
+
+            /// Flushes all mounted filesystems.
+            #[cfg(target_arch = "wasm32")]
+            pub async fn sync() -> Result<()> {
+                implementation::sync().await?;
+                Ok(())
+            }
+
+            /// Waits for a worker to come online.
+            #[cfg(target_arch = "wasm32")]
+            pub async fn wait_online(worker: &JsValue) -> Result<()> {
+                implementation::wait_online(worker).await?;
+                Ok(())
+            }
+
+            /// Attaches a filesystem to a channel or RPC port.
+            #[cfg(target_arch = "wasm32")]
+            pub fn attach_fs(channel: &JsValue, filesystem: &JsValue) -> Result<()> {
+                implementation::attach_fs(channel, filesystem)?;
+                Ok(())
+            }
+
+            /// Detaches a filesystem from a channel or RPC port.
+            #[cfg(target_arch = "wasm32")]
+            pub fn detach_fs(channel: &JsValue, filesystem: &JsValue) -> Result<()> {
+                implementation::detach_fs(channel, filesystem)?;
+                Ok(())
+            }
+
+            /// Returns ZenFS's `fs` object.
+            #[cfg(target_arch = "wasm32")]
+            pub fn core_fs() -> JsValue {
+                implementation::zenfs_fs()
+            }
+
+            /// Returns ZenFS's promise-based filesystem API.
+            #[cfg(target_arch = "wasm32")]
+            pub fn promises() -> JsValue {
+                implementation::promises()
+            }
+
+            /// Returns ZenFS's default filesystem object.
+            #[cfg(target_arch = "wasm32")]
+            pub fn default_fs() -> JsValue {
+                implementation::default_fs()
+            }
+
+            /// Returns ZenFS's virtual filesystem module.
+            #[cfg(target_arch = "wasm32")]
+            pub fn vfs() -> JsValue {
+                implementation::vfs()
+            }
+
+            /// Returns the ZenFS version value exported by `@zenfs/core`.
+            #[cfg(target_arch = "wasm32")]
+            pub fn version() -> JsValue {
+                implementation::version()
+            }
+
+            /// Returns ZenFS's filesystem constants object.
+            #[cfg(target_arch = "wasm32")]
+            pub fn constants() -> JsValue {
+                implementation::constants()
+            }
 
             /// Opens a file with the provided options.
             pub async fn open(path: &str, options: &OpenOptions) -> Result<File> {

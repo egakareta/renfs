@@ -26,6 +26,186 @@ extern "C" {
     static ZEN_FS: JsValue;
 }
 
+macro_rules! zenfs_setup_imports {
+    ($module:literal) => {
+        #[wasm_bindgen(module = $module)]
+        extern "C" {
+            #[wasm_bindgen(catch, js_name = configure)]
+            fn zenfs_configure(configuration: &JsValue) -> Result<js_sys::Promise, JsValue>;
+            #[wasm_bindgen(catch, js_name = configureSync)]
+            fn zenfs_configure_sync(configuration: &JsValue) -> Result<(), JsValue>;
+            #[wasm_bindgen(catch, js_name = configureSingle)]
+            fn zenfs_configure_single(configuration: &JsValue) -> Result<js_sys::Promise, JsValue>;
+            #[wasm_bindgen(catch, js_name = configureSingleSync)]
+            fn zenfs_configure_single_sync(configuration: &JsValue) -> Result<(), JsValue>;
+            #[wasm_bindgen(catch, js_name = configureFileSystem)]
+            fn zenfs_configure_file_system(
+                filesystem: &JsValue,
+                configuration: &JsValue,
+            ) -> Result<(), JsValue>;
+            #[wasm_bindgen(catch, js_name = resolveMountConfig)]
+            fn zenfs_resolve_mount_config(
+                configuration: &JsValue,
+            ) -> Result<js_sys::Promise, JsValue>;
+            #[wasm_bindgen(catch, js_name = resolveMountConfigSync)]
+            fn zenfs_resolve_mount_config_sync(configuration: &JsValue)
+            -> Result<JsValue, JsValue>;
+            #[wasm_bindgen(catch, js_name = resolveRemoteMount)]
+            fn zenfs_resolve_remote_mount(
+                channel: &JsValue,
+                configuration: &JsValue,
+            ) -> Result<js_sys::Promise, JsValue>;
+            #[wasm_bindgen(catch, js_name = mount)]
+            fn zenfs_mount(mount_point: &str, filesystem: &JsValue) -> Result<(), JsValue>;
+            #[wasm_bindgen(catch, js_name = umount)]
+            fn zenfs_umount(mount_point: &str) -> Result<(), JsValue>;
+            #[wasm_bindgen(catch, js_name = sync)]
+            fn zenfs_sync() -> Result<js_sys::Promise, JsValue>;
+            #[wasm_bindgen(catch, js_name = waitOnline)]
+            fn zenfs_wait_online(worker: &JsValue) -> Result<js_sys::Promise, JsValue>;
+            #[wasm_bindgen(catch, js_name = attachFS)]
+            fn zenfs_attach_fs(channel: &JsValue, filesystem: &JsValue) -> Result<(), JsValue>;
+            #[wasm_bindgen(catch, js_name = detachFS)]
+            fn zenfs_detach_fs(channel: &JsValue, filesystem: &JsValue) -> Result<(), JsValue>;
+
+            #[wasm_bindgen(thread_local_v2, js_name = mounts)]
+            static ZEN_MOUNTS: JsValue;
+            #[wasm_bindgen(thread_local_v2, js_name = promises)]
+            static ZEN_PROMISES: JsValue;
+            #[wasm_bindgen(thread_local_v2, js_name = default)]
+            static ZEN_DEFAULT: JsValue;
+            #[wasm_bindgen(thread_local_v2, js_name = vfs)]
+            static ZEN_VFS: JsValue;
+            #[wasm_bindgen(thread_local_v2, js_name = version)]
+            static ZEN_VERSION: JsValue;
+            #[wasm_bindgen(thread_local_v2, js_name = constants)]
+            static ZEN_CONSTANTS: JsValue;
+        }
+    };
+}
+
+#[cfg(not(test))]
+zenfs_setup_imports!("@zenfs/core");
+
+#[cfg(test)]
+zenfs_setup_imports!("https://esm.sh/@zenfs/core@2.7.6?bundle&target=es2022");
+
+async fn await_zenfs_promise(promise: js_sys::Promise) -> Result<JsValue, JsValue> {
+    JsFuture::from(promise).await
+}
+
+#[wasm_bindgen]
+pub async fn configure(configuration: &JsValue) -> Result<(), JsValue> {
+    await_zenfs_promise(zenfs_configure(configuration)?).await?;
+    Ok(())
+}
+
+#[wasm_bindgen(js_name = configureSync)]
+pub fn configure_sync(configuration: &JsValue) -> Result<(), JsValue> {
+    zenfs_configure_sync(configuration)
+}
+
+#[wasm_bindgen(js_name = configureSingle)]
+pub async fn configure_single(configuration: &JsValue) -> Result<(), JsValue> {
+    await_zenfs_promise(zenfs_configure_single(configuration)?).await?;
+    Ok(())
+}
+
+#[wasm_bindgen(js_name = configureSingleSync)]
+pub fn configure_single_sync(configuration: &JsValue) -> Result<(), JsValue> {
+    zenfs_configure_single_sync(configuration)
+}
+
+#[wasm_bindgen(js_name = configureFileSystem)]
+pub fn configure_file_system(filesystem: &JsValue, configuration: &JsValue) -> Result<(), JsValue> {
+    zenfs_configure_file_system(filesystem, configuration)
+}
+
+#[wasm_bindgen(js_name = resolveMountConfig)]
+pub async fn resolve_mount_config(configuration: &JsValue) -> Result<JsValue, JsValue> {
+    await_zenfs_promise(zenfs_resolve_mount_config(configuration)?).await
+}
+
+#[wasm_bindgen(js_name = resolveMountConfigSync)]
+pub fn resolve_mount_config_sync(configuration: &JsValue) -> Result<JsValue, JsValue> {
+    zenfs_resolve_mount_config_sync(configuration)
+}
+
+#[wasm_bindgen(js_name = resolveRemoteMount)]
+pub async fn resolve_remote_mount(
+    channel: &JsValue,
+    configuration: &JsValue,
+) -> Result<JsValue, JsValue> {
+    await_zenfs_promise(zenfs_resolve_remote_mount(channel, configuration)?).await
+}
+
+#[wasm_bindgen]
+pub fn mount(mount_point: &str, filesystem: &JsValue) -> Result<(), JsValue> {
+    zenfs_mount(mount_point, filesystem)
+}
+
+#[wasm_bindgen]
+pub fn umount(mount_point: &str) -> Result<(), JsValue> {
+    zenfs_umount(mount_point)
+}
+
+#[wasm_bindgen]
+pub fn mounts() -> JsValue {
+    ZEN_MOUNTS.with(JsValue::clone)
+}
+
+#[wasm_bindgen]
+pub async fn sync() -> Result<(), JsValue> {
+    await_zenfs_promise(zenfs_sync()?).await?;
+    Ok(())
+}
+
+#[wasm_bindgen(js_name = waitOnline)]
+pub async fn wait_online(worker: &JsValue) -> Result<(), JsValue> {
+    await_zenfs_promise(zenfs_wait_online(worker)?).await?;
+    Ok(())
+}
+
+#[wasm_bindgen(js_name = attachFS)]
+pub fn attach_fs(channel: &JsValue, filesystem: &JsValue) -> Result<(), JsValue> {
+    zenfs_attach_fs(channel, filesystem)
+}
+
+#[wasm_bindgen(js_name = detachFS)]
+pub fn detach_fs(channel: &JsValue, filesystem: &JsValue) -> Result<(), JsValue> {
+    zenfs_detach_fs(channel, filesystem)
+}
+
+#[wasm_bindgen(js_name = fs)]
+pub fn zenfs_fs() -> JsValue {
+    ZEN_FS.with(JsValue::clone)
+}
+
+#[wasm_bindgen]
+pub fn promises() -> JsValue {
+    ZEN_PROMISES.with(JsValue::clone)
+}
+
+#[wasm_bindgen(js_name = default)]
+pub fn default_fs() -> JsValue {
+    ZEN_DEFAULT.with(JsValue::clone)
+}
+
+#[wasm_bindgen]
+pub fn vfs() -> JsValue {
+    ZEN_VFS.with(JsValue::clone)
+}
+
+#[wasm_bindgen]
+pub fn version() -> JsValue {
+    ZEN_VERSION.with(JsValue::clone)
+}
+
+#[wasm_bindgen]
+pub fn constants() -> JsValue {
+    ZEN_CONSTANTS.with(JsValue::clone)
+}
+
 fn call_fs(method: &str, arguments: &[JsValue]) -> Result<JsValue, JsValue> {
     let fs = ZEN_FS.with(JsValue::clone);
     let method = Reflect::get(&fs, &JsValue::from_str(method))?;
