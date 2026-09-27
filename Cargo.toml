@@ -32,6 +32,9 @@ url = { version = "2", optional = true }
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
 [features]
 default = ["cli"]
 cli = [
