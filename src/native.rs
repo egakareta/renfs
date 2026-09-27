@@ -7,11 +7,259 @@ use std::{
 
 use futures_lite::{
     future::block_on,
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     stream::StreamExt,
 };
 
-use super::api::{Dirent, Metadata, OpenOptions, StatFs, TempDir};
+use super::api::{
+    Dirent, Metadata, OpenOptions, ReadStreamOptions, StatFs, TempDir, WatchFileOptions,
+    WatchOptions, WriteStreamOptions,
+};
+
+pub struct ReadStream {
+    file: async_fs::File,
+    chunk_size: usize,
+    remaining: Option<u64>,
+}
+
+pub fn create_read_stream(path: &str, options: ReadStreamOptions) -> io::Result<ReadStream> {
+    if options.chunk_size == 0 || options.chunk_size > u32::MAX as usize {
+        return Err(invalid_path_error(
+            "stream chunk size must be between 1 and u32::MAX",
+        ));
+    }
+    if options.end.is_some_and(|end| end < options.start) {
+        return Err(invalid_path_error("stream end must not be before start"));
+    }
+    let mut file = async_fs::File::from(fs::File::open(path)?);
+    if options.start != 0 {
+        block_on(file.seek(io::SeekFrom::Start(options.start)))?;
+    }
+    Ok(ReadStream {
+        file,
+        chunk_size: options.chunk_size,
+        remaining: options
+            .end
+            .map(|end| end.saturating_sub(options.start).saturating_add(1)),
+    })
+}
+
+pub async fn stream_read(stream: &mut ReadStream) -> io::Result<Option<Vec<u8>>> {
+    let size = stream.remaining.map_or(stream.chunk_size, |remaining| {
+        stream
+            .chunk_size
+            .min(usize::try_from(remaining).unwrap_or(usize::MAX))
+    });
+    if size == 0 {
+        return Ok(None);
+    }
+    let mut bytes = vec![0; size];
+    let read = stream.file.read(&mut bytes).await?;
+    if read == 0 {
+        return Ok(None);
+    }
+    bytes.truncate(read);
+    if let Some(remaining) = &mut stream.remaining {
+        *remaining -= read as u64;
+    }
+    Ok(Some(bytes))
+}
+
+pub fn read_stream_destroy(_stream: &ReadStream) -> io::Result<()> {
+    Ok(())
+}
+
+pub struct WriteStream {
+    file: async_fs::File,
+}
+
+pub fn create_write_stream(path: &str, options: WriteStreamOptions) -> io::Result<WriteStream> {
+    let mut open = fs::OpenOptions::new();
+    open.write(true).create(true).truncate(true);
+    let mut file = async_fs::File::from(open.open(path)?);
+    if let Some(start) = options.start {
+        block_on(file.seek(io::SeekFrom::Start(start)))?;
+    }
+    Ok(WriteStream { file })
+}
+
+pub async fn stream_write(stream: &mut WriteStream, bytes: &[u8]) -> io::Result<()> {
+    stream.file.write_all(bytes).await
+}
+
+pub async fn stream_end(stream: &mut WriteStream) -> io::Result<()> {
+    stream.file.close().await
+}
+
+pub fn write_stream_destroy(_stream: &WriteStream) -> io::Result<()> {
+    Ok(())
+}
+
+pub struct Watcher(std::sync::Mutex<Option<notify::RecommendedWatcher>>);
+
+pub fn watch(
+    path: &str,
+    options: WatchOptions,
+    mut listener: Box<dyn FnMut(&str, &str) + Send>,
+) -> io::Result<Watcher> {
+    use notify::Watcher as _;
+    let watched = PathBuf::from(path);
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let Ok(event) = event else {
+            return;
+        };
+        let kind = match event.kind {
+            notify::EventKind::Create(_)
+            | notify::EventKind::Remove(_)
+            | notify::EventKind::Modify(notify::event::ModifyKind::Name(_)) => "rename",
+            notify::EventKind::Modify(_) => "change",
+            _ => return,
+        };
+        for changed in event.paths {
+            let name = changed
+                .file_name()
+                .and_then(|name| name.to_str())
+                .or_else(|| watched.file_name().and_then(|name| name.to_str()))
+                .unwrap_or("");
+            listener(kind, name);
+        }
+    })
+    .map_err(io::Error::other)?;
+    watcher
+        .watch(
+            Path::new(path),
+            if options.recursive {
+                notify::RecursiveMode::Recursive
+            } else {
+                notify::RecursiveMode::NonRecursive
+            },
+        )
+        .map_err(io::Error::other)?;
+    Ok(Watcher(std::sync::Mutex::new(Some(watcher))))
+}
+
+pub fn watch_close(watcher: &Watcher) -> io::Result<()> {
+    watcher
+        .0
+        .lock()
+        .map_err(|_| io::Error::other("watcher lock was poisoned"))?
+        .take();
+    Ok(())
+}
+
+struct FileWatch {
+    id: u64,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::Thread,
+}
+
+fn file_watches() -> &'static std::sync::Mutex<std::collections::HashMap<String, Vec<FileWatch>>> {
+    static WATCHES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Vec<FileWatch>>>,
+    > = std::sync::OnceLock::new();
+    WATCHES.get_or_init(Default::default)
+}
+
+fn watch_snapshot(path: &str) -> io::Result<Option<fs::Metadata>> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn watched_metadata(metadata: Option<&fs::Metadata>) -> Metadata {
+    metadata
+        .cloned()
+        .map(metadata_parts)
+        .unwrap_or_else(|| Metadata::from_parts(0, false, false, false))
+}
+
+fn snapshot_changed(before: Option<&fs::Metadata>, after: Option<&fs::Metadata>) -> bool {
+    match (before, after) {
+        (None, None) => false,
+        (Some(a), Some(b)) => {
+            a.len() != b.len()
+                || a.modified().ok() != b.modified().ok()
+                || a.accessed().ok() != b.accessed().ok()
+                || a.permissions().readonly() != b.permissions().readonly()
+        }
+        _ => true,
+    }
+}
+
+pub fn watch_file(
+    path: &str,
+    options: WatchFileOptions,
+    mut listener: Box<dyn FnMut(Metadata, Metadata) + Send>,
+) -> io::Result<u64> {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    };
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    if options.interval.is_zero() {
+        return Err(invalid_path_error("watch interval must be positive"));
+    }
+    let mut before = watch_snapshot(path)?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let cancel = Arc::clone(&stop);
+    let path_owned = path.to_owned();
+    let handle = std::thread::Builder::new()
+        .name("renfs-watch-file".to_owned())
+        .spawn(move || {
+            loop {
+                std::thread::park_timeout(options.interval);
+                if cancel.load(Ordering::Acquire) {
+                    break;
+                }
+                let Ok(after) = watch_snapshot(&path_owned) else {
+                    continue;
+                };
+                if snapshot_changed(before.as_ref(), after.as_ref()) {
+                    listener(
+                        watched_metadata(after.as_ref()),
+                        watched_metadata(before.as_ref()),
+                    );
+                }
+                before = after;
+            }
+        })?;
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let watch = FileWatch {
+        id,
+        stop,
+        thread: handle.thread().clone(),
+    };
+    file_watches()
+        .lock()
+        .map_err(|_| io::Error::other("file watcher lock was poisoned"))?
+        .entry(path.to_owned())
+        .or_default()
+        .push(watch);
+    Ok(id)
+}
+
+pub fn unwatch_file(path: &str, id: Option<u64>) -> io::Result<()> {
+    let mut watches = file_watches()
+        .lock()
+        .map_err(|_| io::Error::other("file watcher lock was poisoned"))?;
+    if let Some(list) = watches.get_mut(path) {
+        list.retain(|watch| {
+            if id.is_none_or(|id| id == watch.id) {
+                watch.stop.store(true, std::sync::atomic::Ordering::Release);
+                watch.thread.unpark();
+                false
+            } else {
+                true
+            }
+        });
+        if list.is_empty() {
+            watches.remove(path);
+        }
+    }
+    Ok(())
+}
 
 pub type File = async_fs::File;
 pub type Dir = async_fs::ReadDir;

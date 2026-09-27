@@ -7,10 +7,281 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-use super::api::{Dirent, Metadata, OpenOptions, StatFs, TempDir};
+use super::api::{
+    Dirent, Metadata, OpenOptions, ReadStreamOptions, StatFs, TempDir, WatchFileOptions,
+    WatchOptions, WriteStreamOptions,
+};
 
 pub type File = u32;
 pub type Dir = JsValue;
+
+pub struct ReadStream {
+    value: JsValue,
+    iterator: JsValue,
+}
+
+pub fn create_read_stream(path: &str, options: ReadStreamOptions) -> Result<ReadStream, JsValue> {
+    if options.chunk_size == 0 || options.chunk_size > u32::MAX as usize {
+        return Err(invalid_path_error(
+            "stream chunk size must be between 1 and u32::MAX",
+        ));
+    }
+    if options.end.is_some_and(|end| end < options.start) {
+        return Err(invalid_path_error("stream end must not be before start"));
+    }
+    const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+    if options.start > MAX_SAFE_INTEGER || options.end.is_some_and(|end| end >= MAX_SAFE_INTEGER) {
+        return Err(invalid_path_error(
+            "stream byte positions must be JavaScript safe integers",
+        ));
+    }
+    let js_options = Object::new();
+    Reflect::set(
+        &js_options,
+        &JsValue::from_str("highWaterMark"),
+        &JsValue::from_f64(options.chunk_size as f64),
+    )?;
+    if options.start != 0 {
+        Reflect::set(
+            &js_options,
+            &JsValue::from_str("start"),
+            &JsValue::from_f64(options.start as f64),
+        )?;
+    }
+    if let Some(end) = options.end {
+        Reflect::set(
+            &js_options,
+            &JsValue::from_str("end"),
+            &JsValue::from_f64(end as f64),
+        )?;
+    }
+    let value = call_fs(
+        "createReadStream",
+        &[JsValue::from_str(path), js_options.into()],
+    )?;
+    let symbol = js_sys::Symbol::async_iterator();
+    let method = Reflect::get(&value, &symbol.into())?.dyn_into::<Function>()?;
+    let iterator = method.call0(&value)?;
+    Ok(ReadStream { value, iterator })
+}
+
+pub async fn stream_read(stream: &mut ReadStream) -> Result<Option<Vec<u8>>, JsValue> {
+    let next =
+        Reflect::get(&stream.iterator, &JsValue::from_str("next"))?.dyn_into::<Function>()?;
+    let promise = next
+        .call0(&stream.iterator)?
+        .dyn_into::<js_sys::Promise>()?;
+    let result = JsFuture::from(promise).await?;
+    if Reflect::get(&result, &JsValue::from_str("done"))?.as_bool() == Some(true) {
+        return Ok(None);
+    }
+    let value = Reflect::get(&result, &JsValue::from_str("value"))?;
+    if !value.is_instance_of::<Uint8Array>() {
+        return Err(JsValue::from_str(
+            "ZenFS read stream returned a non-byte chunk",
+        ));
+    }
+    Ok(Some(Uint8Array::new(&value).to_vec()))
+}
+
+pub fn read_stream_destroy(stream: &ReadStream) -> Result<(), JsValue> {
+    let method =
+        Reflect::get(&stream.value, &JsValue::from_str("destroy"))?.dyn_into::<Function>()?;
+    method.call0(&stream.value)?;
+    Ok(())
+}
+
+pub struct WriteStream {
+    value: JsValue,
+}
+
+pub fn create_write_stream(
+    path: &str,
+    options: WriteStreamOptions,
+) -> Result<WriteStream, JsValue> {
+    if options.start.is_some_and(|start| start > (1 << 53) - 1) {
+        return Err(invalid_path_error(
+            "stream byte positions must be JavaScript safe integers",
+        ));
+    }
+    let js_options = Object::new();
+    if let Some(start) = options.start {
+        Reflect::set(
+            &js_options,
+            &JsValue::from_str("start"),
+            &JsValue::from_f64(start as f64),
+        )?;
+    }
+    let value = call_fs(
+        "createWriteStream",
+        &[JsValue::from_str(path), js_options.into()],
+    )?;
+    Ok(WriteStream { value })
+}
+
+pub async fn stream_write(stream: &mut WriteStream, bytes: &[u8]) -> Result<(), JsValue> {
+    let write = Reflect::get(&stream.value, &JsValue::from_str("write"))?.dyn_into::<Function>()?;
+    let chunk = Uint8Array::from(bytes);
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
+        let callback_reject = reject.clone();
+        let callback = Closure::once_into_js(move |error: JsValue| {
+            if error.is_null() || error.is_undefined() {
+                let _ = resolve.call0(&JsValue::UNDEFINED);
+            } else {
+                let _ = callback_reject.call1(&JsValue::UNDEFINED, &error);
+            }
+        });
+        if let Err(error) = write.call2(&stream.value, &chunk, &callback) {
+            let _ = reject.call1(&JsValue::UNDEFINED, &error);
+        }
+    });
+    JsFuture::from(promise).await?;
+    Ok(())
+}
+
+pub async fn stream_end(stream: &mut WriteStream) -> Result<(), JsValue> {
+    let end = Reflect::get(&stream.value, &JsValue::from_str("end"))?.dyn_into::<Function>()?;
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
+        let callback = Closure::once_into_js(move || {
+            let _ = resolve.call0(&JsValue::UNDEFINED);
+        });
+        if let Err(error) = end.call1(&stream.value, &callback) {
+            let _ = reject.call1(&JsValue::UNDEFINED, &error);
+        }
+    });
+    JsFuture::from(promise).await?;
+    Ok(())
+}
+
+pub fn write_stream_destroy(stream: &WriteStream) -> Result<(), JsValue> {
+    let method =
+        Reflect::get(&stream.value, &JsValue::from_str("destroy"))?.dyn_into::<Function>()?;
+    method.call0(&stream.value)?;
+    Ok(())
+}
+
+pub struct Watcher {
+    value: JsValue,
+    _callback: Closure<dyn FnMut(JsValue, JsValue)>,
+}
+
+pub fn watch(
+    path: &str,
+    options: WatchOptions,
+    mut listener: Box<dyn FnMut(&str, &str) + Send>,
+) -> Result<Watcher, JsValue> {
+    let js_options = Object::new();
+    Reflect::set(
+        &js_options,
+        &JsValue::from_str("recursive"),
+        &JsValue::from_bool(options.recursive),
+    )?;
+    Reflect::set(
+        &js_options,
+        &JsValue::from_str("persistent"),
+        &JsValue::from_bool(options.persistent),
+    )?;
+    let callback = Closure::wrap(Box::new(move |event: JsValue, name: JsValue| {
+        if let (Some(event), Some(name)) = (event.as_string(), name.as_string()) {
+            listener(&event, &name);
+        }
+    }) as Box<dyn FnMut(JsValue, JsValue)>);
+    let value = call_fs(
+        "watch",
+        &[
+            JsValue::from_str(path),
+            js_options.into(),
+            callback.as_ref().clone(),
+        ],
+    )?;
+    Ok(Watcher {
+        value,
+        _callback: callback,
+    })
+}
+
+pub fn watch_close(watcher: &Watcher) -> Result<(), JsValue> {
+    let close =
+        Reflect::get(&watcher.value, &JsValue::from_str("close"))?.dyn_into::<Function>()?;
+    close.call0(&watcher.value)?;
+    Ok(())
+}
+
+thread_local! {
+    static FILE_WATCHES: std::cell::RefCell<std::collections::HashMap<String, Vec<(u64, Closure<dyn FnMut(JsValue, JsValue)>)>>> = Default::default();
+    static NEXT_FILE_WATCH_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+}
+
+pub fn watch_file(
+    path: &str,
+    options: WatchFileOptions,
+    mut listener: Box<dyn FnMut(Metadata, Metadata) + Send>,
+) -> Result<u64, JsValue> {
+    if options.interval.is_zero() {
+        return Err(invalid_path_error("watch interval must be positive"));
+    }
+    let js_options = Object::new();
+    Reflect::set(
+        &js_options,
+        &JsValue::from_str("interval"),
+        &JsValue::from_f64(options.interval.as_secs_f64() * 1000.0),
+    )?;
+    Reflect::set(
+        &js_options,
+        &JsValue::from_str("persistent"),
+        &JsValue::from_bool(options.persistent),
+    )?;
+    let callback = Closure::wrap(Box::new(move |curr: JsValue, prev: JsValue| {
+        if let (Ok(curr), Ok(prev)) = (metadata_from_stats(&curr), metadata_from_stats(&prev)) {
+            listener(curr, prev);
+        }
+    }) as Box<dyn FnMut(JsValue, JsValue)>);
+    call_fs(
+        "watchFile",
+        &[
+            JsValue::from_str(path),
+            js_options.into(),
+            callback.as_ref().clone(),
+        ],
+    )?;
+    let id = NEXT_FILE_WATCH_ID.with(|next| {
+        let id = next.get();
+        next.set(id.wrapping_add(1));
+        id
+    });
+    FILE_WATCHES.with(|watches| {
+        watches
+            .borrow_mut()
+            .entry(path.to_owned())
+            .or_default()
+            .push((id, callback))
+    });
+    Ok(id)
+}
+
+pub fn unwatch_file(path: &str, id: Option<u64>) -> Result<(), JsValue> {
+    FILE_WATCHES.with(|watches| {
+        let mut watches = watches.borrow_mut();
+        if let Some(id) = id {
+            if let Some(list) = watches.get_mut(path) {
+                if let Some(index) = list.iter().position(|(candidate, _)| *candidate == id) {
+                    call_fs(
+                        "unwatchFile",
+                        &[JsValue::from_str(path), list[index].1.as_ref().clone()],
+                    )?;
+                    list.remove(index);
+                    if list.is_empty() {
+                        watches.remove(path);
+                    }
+                }
+            }
+        } else {
+            call_fs("unwatchFile", &[JsValue::from_str(path)])?;
+            watches.remove(path);
+        }
+        Ok(())
+    })
+}
 
 pub fn invalid_path_error(message: &str) -> JsValue {
     JsValue::from_str(message)
@@ -1302,6 +1573,136 @@ mod tests {
     fn test_path(name: &str) -> String {
         create_dir_all("/app").unwrap();
         format!("/app/renfs-{name}-{:x}", js_sys::Math::random().to_bits())
+    }
+
+    async fn wait_for_watch(milliseconds: u32) {
+        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+            let callback = Closure::once_into_js(move || {
+                let _ = resolve.call0(&JsValue::UNDEFINED);
+            });
+            let set_timeout = Reflect::get(&js_sys::global(), &JsValue::from_str("setTimeout"))
+                .unwrap()
+                .dyn_into::<Function>()
+                .unwrap();
+            set_timeout
+                .call2(
+                    &JsValue::UNDEFINED,
+                    &callback,
+                    &JsValue::from_f64(f64::from(milliseconds)),
+                )
+                .unwrap();
+        });
+        JsFuture::from(promise).await.unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn streams_use_zenfs_read_and_write_objects() {
+        let root = test_path("streams");
+        mkdir_sync(&root, false).unwrap();
+        let dir = crate::Directory::new(&root).unwrap();
+        let mut output = dir.create_write_stream("data").unwrap();
+        output.write(b"abc").await.unwrap();
+        output.write(b"defgh").await.unwrap();
+        output.end().await.unwrap();
+        assert_eq!(dir.read_text("data").unwrap(), "abcdefgh");
+
+        let mut input = dir
+            .create_read_stream_with_options(
+                "data",
+                crate::ReadStreamOptions {
+                    start: 2,
+                    end: Some(6),
+                    chunk_size: 2,
+                },
+            )
+            .unwrap();
+        assert_eq!(input.read().await.unwrap(), Some(b"cd".to_vec()));
+        assert_eq!(input.read().await.unwrap(), Some(b"ef".to_vec()));
+        assert_eq!(input.read().await.unwrap(), Some(b"g".to_vec()));
+        assert_eq!(input.read().await.unwrap(), None);
+        input.destroy().unwrap();
+        let mut replace = dir.create_write_stream("data").unwrap();
+        replace.write(b"!").await.unwrap();
+        replace.end().await.unwrap();
+        assert_eq!(dir.read_text("data").unwrap(), "!");
+        let mut positioned = dir
+            .create_write_stream_with_options(
+                "positioned",
+                crate::WriteStreamOptions { start: Some(2) },
+            )
+            .unwrap();
+        positioned.write(b"x").await.unwrap();
+        positioned.end().await.unwrap();
+        assert_eq!(dir.read_file_sync("positioned").unwrap(), b"\0\0x");
+
+        let mut abandoned = dir.create_read_stream("data").unwrap();
+        abandoned.destroy().unwrap();
+        assert!(abandoned.read().await.is_err());
+        let mut invalid = dir.create_write_stream("missing/child").unwrap();
+        assert!(invalid.write(b"bad").await.is_err());
+        invalid.destroy().unwrap();
+        rm_sync(&root, true, false).unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn watch_and_watch_file_notify_and_unsubscribe() {
+        use std::sync::{Arc, Mutex};
+        let root = test_path("watch");
+        mkdir_sync(&root, false).unwrap();
+        let file = format!("{root}/file");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let reported = Arc::clone(&events);
+        let mut watcher = crate::fs::watch(&root, move |event, name| {
+            reported
+                .lock()
+                .unwrap()
+                .push((event.to_owned(), name.to_owned()));
+        })
+        .unwrap();
+        write_text(&file, "a").unwrap();
+        wait_for_watch(50).await;
+        assert!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, name)| name == "file")
+        );
+        watcher.close().unwrap();
+
+        let first = Arc::new(Mutex::new(Vec::new()));
+        let second = Arc::new(Mutex::new(Vec::new()));
+        let options = crate::WatchFileOptions {
+            interval: std::time::Duration::from_millis(20),
+            ..Default::default()
+        };
+        let reported = Arc::clone(&first);
+        let id = crate::fs::watch_file_with_options(&file, options, move |curr, prev| {
+            reported.lock().unwrap().push((curr.len(), prev.len()));
+        })
+        .unwrap();
+        let reported = Arc::clone(&second);
+        crate::fs::watch_file_with_options(&file, options, move |curr, prev| {
+            reported.lock().unwrap().push((curr.len(), prev.len()));
+        })
+        .unwrap();
+        write_text(&file, "longer").unwrap();
+        wait_for_watch(120).await;
+        assert!(first.lock().unwrap().contains(&(6, 1)));
+        assert!(second.lock().unwrap().contains(&(6, 1)));
+        crate::fs::unwatch_file_listener(&file, id).unwrap();
+        first.lock().unwrap().clear();
+        second.lock().unwrap().clear();
+        write_text(&file, "even longer").unwrap();
+        wait_for_watch(120).await;
+        assert!(first.lock().unwrap().is_empty());
+        assert!(second.lock().unwrap().contains(&(11, 6)));
+        crate::fs::unwatch_file(&file).unwrap();
+        second.lock().unwrap().clear();
+        write_text(&file, "gone quiet").unwrap();
+        wait_for_watch(70).await;
+        assert!(second.lock().unwrap().is_empty());
+        rm_sync(&root, true, false).unwrap();
     }
 
     #[wasm_bindgen_test]

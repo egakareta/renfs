@@ -250,6 +250,210 @@ impl Drop for Dir {
     }
 }
 
+/// A filesystem watcher returned by [`fs::watch`].
+pub struct Watcher {
+    inner: Option<implementation::Watcher>,
+}
+
+impl std::fmt::Debug for Watcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Watcher").finish_non_exhaustive()
+    }
+}
+
+impl Watcher {
+    fn from_inner(inner: implementation::Watcher) -> Self {
+        Self { inner: Some(inner) }
+    }
+
+    /// Stops watching for changes. Dropping the watcher also closes it.
+    pub fn close(&mut self) -> Result<()> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| invalid_path_error("watcher is closed"))?;
+        implementation::watch_close(inner).map_err(Error::from)?;
+        self.inner.take();
+        Ok(())
+    }
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            let _ = implementation::watch_close(&inner);
+        }
+    }
+}
+
+/// Options for watching file or directory changes.
+#[derive(Clone, Copy, Debug)]
+pub struct WatchOptions {
+    /// Whether to watch descendants of a directory as well.
+    pub recursive: bool,
+    /// Whether the watcher keeps the JavaScript event loop alive (wasm only).
+    pub persistent: bool,
+}
+
+impl Default for WatchOptions {
+    fn default() -> Self {
+        Self {
+            recursive: false,
+            persistent: true,
+        }
+    }
+}
+
+/// Options for polling changes to a file's metadata.
+#[derive(Clone, Copy, Debug)]
+pub struct WatchFileOptions {
+    /// Polling interval; ZenFS defaults to 5007 milliseconds.
+    pub interval: std::time::Duration,
+    /// Whether the watcher keeps the JavaScript event loop alive (wasm only).
+    pub persistent: bool,
+}
+
+/// Options for a streaming read. `end` is an inclusive byte offset.
+#[derive(Clone, Copy, Debug)]
+pub struct ReadStreamOptions {
+    /// First byte to read.
+    pub start: u64,
+    /// Last byte to read, inclusive. `None` reads to end of file.
+    pub end: Option<u64>,
+    /// Maximum bytes per chunk.
+    pub chunk_size: usize,
+}
+
+impl Default for ReadStreamOptions {
+    fn default() -> Self {
+        Self {
+            start: 0,
+            end: None,
+            chunk_size: 64 * 1024,
+        }
+    }
+}
+
+/// Options for a streaming write. ZenFS's `createWriteStream` always opens
+/// with `w`, truncating the file before applying `start`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WriteStreamOptions {
+    /// Byte position where writing begins after truncation.
+    pub start: Option<u64>,
+}
+
+/// A readable byte stream. Dropping it destroys the stream.
+pub struct ReadStream {
+    inner: Option<implementation::ReadStream>,
+}
+
+impl std::fmt::Debug for ReadStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadStream").finish_non_exhaustive()
+    }
+}
+
+impl ReadStream {
+    fn from_inner(inner: implementation::ReadStream) -> Self {
+        Self { inner: Some(inner) }
+    }
+
+    /// Reads the next chunk, or `None` at end of stream.
+    pub async fn read(&mut self) -> Result<Option<Vec<u8>>> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| invalid_path_error("read stream is destroyed"))?;
+        implementation_result!(implementation::stream_read(inner).await)
+    }
+
+    /// Destroys the stream and releases its resources.
+    pub fn destroy(&mut self) -> Result<()> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| invalid_path_error("read stream is destroyed"))?;
+        implementation::read_stream_destroy(inner).map_err(Error::from)?;
+        self.inner.take();
+        Ok(())
+    }
+}
+
+impl Drop for ReadStream {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            let _ = implementation::read_stream_destroy(&inner);
+        }
+    }
+}
+
+/// A writable byte stream. Call [`WriteStream::end`] to finish writing.
+pub struct WriteStream {
+    inner: Option<implementation::WriteStream>,
+}
+
+impl std::fmt::Debug for WriteStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteStream").finish_non_exhaustive()
+    }
+}
+
+impl WriteStream {
+    fn from_inner(inner: implementation::WriteStream) -> Self {
+        Self { inner: Some(inner) }
+    }
+
+    /// Writes all bytes, waiting until the stream has handled the chunk.
+    pub async fn write(&mut self, bytes: &[u8]) -> Result<()> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| invalid_path_error("write stream is closed"))?;
+        implementation_result!(implementation::stream_write(inner, bytes).await)
+    }
+
+    /// Finishes writing and closes the stream.
+    pub async fn end(&mut self) -> Result<()> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| invalid_path_error("write stream is closed"))?;
+        implementation::stream_end(inner)
+            .await
+            .map_err(Error::from)?;
+        self.inner.take();
+        Ok(())
+    }
+
+    /// Destroys the stream without waiting for pending writes to finish.
+    pub fn destroy(&mut self) -> Result<()> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| invalid_path_error("write stream is closed"))?;
+        implementation::write_stream_destroy(inner).map_err(Error::from)?;
+        self.inner.take();
+        Ok(())
+    }
+}
+
+impl Drop for WriteStream {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            let _ = implementation::write_stream_destroy(&inner);
+        }
+    }
+}
+
+impl Default for WatchFileOptions {
+    fn default() -> Self {
+        Self {
+            interval: std::time::Duration::from_millis(5007),
+            persistent: true,
+        }
+    }
+}
+
 /// A temporary directory removed when this value is dropped.
 #[derive(Debug)]
 pub struct TempDir {
@@ -369,6 +573,82 @@ impl Directory {
     pub async fn symlink(&self, target: &str, link: &str) -> Result<()> {
         let (target, link) = self.symlink_paths(target, link)?;
         implementation_result!(implementation::symlink(&target, &link).await)
+    }
+
+    /// Watches a file or directory for changes.
+    pub fn watch(
+        &self,
+        path: &str,
+        listener: impl FnMut(&str, &str) + Send + 'static,
+    ) -> Result<Watcher> {
+        self.watch_with_options(path, WatchOptions::default(), listener)
+    }
+
+    /// Watches a file or directory with the provided options.
+    pub fn watch_with_options(
+        &self,
+        path: &str,
+        options: WatchOptions,
+        listener: impl FnMut(&str, &str) + Send + 'static,
+    ) -> Result<Watcher> {
+        fs::watch_with_options(&self.resolve(path)?, options, listener)
+    }
+
+    /// Watches changes to a file using polling. Returns an ID for removing this listener.
+    pub fn watch_file(
+        &self,
+        path: &str,
+        listener: impl FnMut(Metadata, Metadata) + Send + 'static,
+    ) -> Result<u64> {
+        self.watch_file_with_options(path, WatchFileOptions::default(), listener)
+    }
+
+    /// Watches changes to a file with the provided polling options.
+    pub fn watch_file_with_options(
+        &self,
+        path: &str,
+        options: WatchFileOptions,
+        listener: impl FnMut(Metadata, Metadata) + Send + 'static,
+    ) -> Result<u64> {
+        fs::watch_file_with_options(&self.resolve(path)?, options, listener)
+    }
+
+    /// Stops all `watch_file` listeners for a path.
+    pub fn unwatch_file(&self, path: &str) -> Result<()> {
+        fs::unwatch_file(&self.resolve(path)?)
+    }
+
+    /// Stops the `watch_file` listener with the given ID for a path.
+    pub fn unwatch_file_listener(&self, path: &str, id: u64) -> Result<()> {
+        fs::unwatch_file_listener(&self.resolve(path)?, id)
+    }
+
+    /// Opens a file as a readable stream.
+    pub fn create_read_stream(&self, path: &str) -> Result<ReadStream> {
+        self.create_read_stream_with_options(path, ReadStreamOptions::default())
+    }
+
+    /// Opens a file as a readable stream with byte-range and chunk options.
+    pub fn create_read_stream_with_options(
+        &self,
+        path: &str,
+        options: ReadStreamOptions,
+    ) -> Result<ReadStream> {
+        fs::create_read_stream_with_options(&self.resolve(path)?, options)
+    }
+
+    /// Opens a file as a writable stream, replacing its contents.
+    pub fn create_write_stream(&self, path: &str) -> Result<WriteStream> {
+        self.create_write_stream_with_options(path, WriteStreamOptions::default())
+    }
+
+    /// Opens a file as a writable stream with the provided options.
+    pub fn create_write_stream_with_options(
+        &self,
+        path: &str,
+        options: WriteStreamOptions,
+    ) -> Result<WriteStream> {
+        fs::create_write_stream_with_options(&self.resolve(path)?, options)
     }
 }
 
@@ -768,7 +1048,7 @@ macro_rules! define_file_api {
         /// Filesystem manipulation operations.
         pub mod fs {
             use super::{
-                Blob, Dir, File, FileOps, Metadata, OpenOptions, Result, RootFileSystem, StatFs, TempDir,
+                Blob, Dir, File, FileOps, Metadata, OpenOptions, Result, RootFileSystem, StatFs, TempDir, Watcher, WatchOptions, WatchFileOptions, ReadStream, ReadStreamOptions, WriteStream, WriteStreamOptions,
             };
 
             #[cfg(target_arch = "wasm32")]
@@ -783,6 +1063,64 @@ macro_rules! define_file_api {
             pub const W_OK: u32 = 2;
             /// Check whether a path is executable.
             pub const X_OK: u32 = 1;
+
+            /// Watches a file or directory for changes.
+            ///
+            /// The listener receives a ZenFS-style event type (`change` or `rename`)
+            /// and the name of the changed entry. Keep the returned watcher alive
+            /// for as long as notifications are needed.
+            pub fn watch(path: &str, listener: impl FnMut(&str, &str) + Send + 'static) -> Result<Watcher> {
+                watch_with_options(path, WatchOptions::default(), listener)
+            }
+
+            /// Watches a file or directory with the provided options.
+            pub fn watch_with_options(path: &str, options: WatchOptions, listener: impl FnMut(&str, &str) + Send + 'static) -> Result<Watcher> {
+                let inner = implementation::watch(path, options, Box::new(listener)).map_err(super::Error::from)?;
+                Ok(Watcher::from_inner(inner))
+            }
+
+            /// Watches changes to a file using polling and returns an ID for its listener.
+            ///
+            /// Unlike `watch`, this listener receives the current and previous metadata.
+            /// Use [`unwatch_file`] or [`unwatch_file_listener`] to stop it.
+            pub fn watch_file(path: &str, listener: impl FnMut(Metadata, Metadata) + Send + 'static) -> Result<u64> {
+                watch_file_with_options(path, WatchFileOptions::default(), listener)
+            }
+
+            /// Watches changes to a file with the provided polling options.
+            pub fn watch_file_with_options(path: &str, options: WatchFileOptions, listener: impl FnMut(Metadata, Metadata) + Send + 'static) -> Result<u64> {
+                implementation::watch_file(path, options, Box::new(listener)).map_err(Into::into)
+            }
+
+            /// Stops all `watch_file` listeners for a path.
+            pub fn unwatch_file(path: &str) -> Result<()> {
+                implementation::unwatch_file(path, None).map_err(Into::into)
+            }
+
+            /// Stops one `watch_file` listener by the ID returned from [`watch_file`].
+            pub fn unwatch_file_listener(path: &str, id: u64) -> Result<()> {
+                implementation::unwatch_file(path, Some(id)).map_err(Into::into)
+            }
+
+            /// Opens a file as a readable stream.
+            pub fn create_read_stream(path: &str) -> Result<ReadStream> {
+                create_read_stream_with_options(path, ReadStreamOptions::default())
+            }
+
+            /// Opens a file as a readable stream with byte-range and chunk options.
+            pub fn create_read_stream_with_options(path: &str, options: ReadStreamOptions) -> Result<ReadStream> {
+                implementation::create_read_stream(path, options).map(ReadStream::from_inner).map_err(Into::into)
+            }
+
+            /// Opens a file as a writable stream, replacing its contents.
+            pub fn create_write_stream(path: &str) -> Result<WriteStream> {
+                create_write_stream_with_options(path, WriteStreamOptions::default())
+            }
+
+            /// Opens a file as a writable stream with the provided options.
+            pub fn create_write_stream_with_options(path: &str, options: WriteStreamOptions) -> Result<WriteStream> {
+                implementation::create_write_stream(path, options).map(WriteStream::from_inner).map_err(Into::into)
+            }
 
             /// Configures ZenFS with the supplied configuration, including asynchronous backends.
             #[cfg(target_arch = "wasm32")]
@@ -1205,6 +1543,151 @@ pub fn app_dir(name: &str) -> Result<Directory> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn streams_read_in_chunks_and_finish_or_destroy_writes() {
+        futures_lite::future::block_on(async {
+            let temp = tempdir().unwrap();
+            let dir = Directory::new(temp.path()).unwrap();
+            let mut output = dir.create_write_stream("data").unwrap();
+            output.write(b"abcdef").await.unwrap();
+            output.write(b"gh").await.unwrap();
+            output.end().await.unwrap();
+            assert!(output.write(b"no").await.is_err());
+            assert_eq!(dir.read_text("data").unwrap(), "abcdefgh");
+
+            let mut input = dir
+                .create_read_stream_with_options(
+                    "data",
+                    ReadStreamOptions {
+                        start: 2,
+                        end: Some(6),
+                        chunk_size: 2,
+                    },
+                )
+                .unwrap();
+            assert_eq!(input.read().await.unwrap(), Some(b"cd".to_vec()));
+            assert_eq!(input.read().await.unwrap(), Some(b"ef".to_vec()));
+            assert_eq!(input.read().await.unwrap(), Some(b"g".to_vec()));
+            assert_eq!(input.read().await.unwrap(), None);
+            input.destroy().unwrap();
+            assert!(input.read().await.is_err());
+
+            let mut replace = dir.create_write_stream("data").unwrap();
+            replace.write(b"!").await.unwrap();
+            replace.end().await.unwrap();
+            assert_eq!(dir.read_text("data").unwrap(), "!");
+            let mut positioned = dir
+                .create_write_stream_with_options(
+                    "positioned",
+                    WriteStreamOptions { start: Some(2) },
+                )
+                .unwrap();
+            positioned.write(b"x").await.unwrap();
+            positioned.end().await.unwrap();
+            assert_eq!(dir.read_file_sync("positioned").unwrap(), b"\0\0x");
+            let mut abandoned = dir.create_write_stream("abandoned").unwrap();
+            abandoned.destroy().unwrap();
+            assert!(abandoned.write(b"no").await.is_err());
+            assert!(
+                dir.create_read_stream_with_options(
+                    "data",
+                    ReadStreamOptions {
+                        chunk_size: 0,
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+            );
+            assert!(
+                dir.create_read_stream_with_options(
+                    "data",
+                    ReadStreamOptions {
+                        start: 3,
+                        end: Some(2),
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+            );
+            assert!(dir.create_read_stream("../escape").is_err());
+
+            let path = temp.path().join("data");
+            let mut root_stream = fs::create_read_stream(path.to_str().unwrap()).unwrap();
+            assert_eq!(root_stream.read().await.unwrap(), Some(b"!".to_vec()));
+        });
+    }
+
+    #[test]
+    fn watch_reports_events_and_closes() {
+        let temp = tempdir().unwrap();
+        let dir = Directory::new(temp.path()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = dir
+            .watch(".", move |event, name| {
+                let _ = tx.send((event.to_owned(), name.to_owned()));
+            })
+            .unwrap();
+        dir.write_text("created", "hello").unwrap();
+        let (event, name) = rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap();
+        assert!(matches!(event.as_str(), "change" | "rename"));
+        assert_eq!(name, "created");
+        watcher.close().unwrap();
+        assert!(watcher.close().is_err());
+        assert!(dir.watch("../escape", |_, _| {}).is_err());
+    }
+
+    #[test]
+    fn watch_file_listeners_can_be_removed_individually_or_together() {
+        let temp = tempdir().unwrap();
+        let dir = Directory::new(temp.path()).unwrap();
+        dir.write_text("file", "a").unwrap();
+        let options = WatchFileOptions {
+            interval: std::time::Duration::from_millis(20),
+            ..Default::default()
+        };
+        let (first_tx, first_rx) = std::sync::mpsc::channel();
+        let first = dir
+            .watch_file_with_options("file", options, move |curr, prev| {
+                let _ = first_tx.send((curr.len(), prev.len()));
+            })
+            .unwrap();
+        let (second_tx, second_rx) = std::sync::mpsc::channel();
+        let second = dir
+            .watch_file_with_options("file", options, move |curr, prev| {
+                let _ = second_tx.send((curr.len(), prev.len()));
+            })
+            .unwrap();
+        dir.write_text("file", "longer").unwrap();
+        assert_eq!(
+            first_rx
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap(),
+            (6, 1)
+        );
+        assert_eq!(
+            second_rx
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap(),
+            (6, 1)
+        );
+        dir.unwatch_file_listener("file", first).unwrap();
+        dir.write_text("file", "even longer").unwrap();
+        assert_eq!(
+            second_rx
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap(),
+            (11, 6)
+        );
+        assert!(
+            first_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err()
+        );
+        dir.unwatch_file("file").unwrap();
+        dir.unwatch_file_listener("file", second).unwrap();
+        assert!(dir.unwatch_file("../escape").is_err());
+    }
 
     #[test]
     fn hard_links_rename_and_unlink_work_on_fs_and_directory() {
