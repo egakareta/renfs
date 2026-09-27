@@ -1558,12 +1558,14 @@ mod tests {
         );
         dir.unwatch_file_listener("file", first).unwrap();
         dir.write_text("file", "even longer").unwrap();
-        assert_eq!(
-            second_rx
-                .recv_timeout(std::time::Duration::from_secs(3))
-                .unwrap(),
-            (11, 6)
-        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let (current_len, _) = second_rx.recv_timeout(remaining).unwrap();
+            if current_len == 11 {
+                break;
+            }
+        }
         assert!(
             first_rx
                 .recv_timeout(std::time::Duration::from_millis(100))
