@@ -1,8 +1,19 @@
-import { configure } from "@zenfs/core";
-import { IndexedDB } from "@zenfs/dom";
+import { configure, InMemory } from "@zenfs/core";
+import { IndexedDB, WebAccess, WebStorage } from "@zenfs/dom";
 
 await configure({
-  mounts: { "/": IndexedDB },
+  mounts: {
+    "/": IndexedDB,
+    "/tmp": {
+      backend: InMemory,
+    },
+    "/opfs": {
+      backend: WebAccess,
+      handle: await navigator.storage.getDirectory(),
+    },
+    "/indexeddb": IndexedDB,
+    "/localstorage": { backend: WebStorage, storage: localStorage },
+  },
 });
 
 export default () => ({});
