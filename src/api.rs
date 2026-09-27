@@ -115,6 +115,7 @@ macro_rules! define_file_api {
 }
 
 define_file_api! {
+    append_text(contents: &str) -> ();
     exists() -> bool;
     read_text() -> String;
     write_text(contents: &str) -> ();
@@ -160,6 +161,19 @@ mod tests {
 
         fs::write_text(full_path, "from fs").unwrap();
         assert_eq!(dir.read_text("hello.txt").unwrap(), "from fs");
+    }
+
+    #[test]
+    fn append_text_creates_and_appends_to_files() {
+        let temp = tempdir().unwrap();
+        let dir = Directory::new(temp.path()).unwrap();
+        let full_path = temp.path().join("hello.txt");
+        let full_path = full_path.to_str().unwrap();
+
+        dir.append_text("hello.txt", "from directory").unwrap();
+        fs::append_text(full_path, " and fs").unwrap();
+
+        assert_eq!(dir.read_text("hello.txt").unwrap(), "from directory and fs");
     }
 
     #[test]

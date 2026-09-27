@@ -10,7 +10,7 @@ mod api;
 
 pub use api::fs;
 pub use api::fs::{
-    create_dir, create_dir_all, exists, read_dir, read_file, read_text, remove_file, write_file,
-    write_text,
+    append_text, create_dir, create_dir_all, exists, read_dir, read_file, read_text, remove_file,
+    write_file, write_text,
 };
 pub use api::{Directory, Error, FileOps, Result, app_dir};

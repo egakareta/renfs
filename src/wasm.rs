@@ -75,6 +75,15 @@ pub fn write_text(path: &str, contents: &str) -> Result<(), JsValue> {
     Ok(())
 }
 
+#[wasm_bindgen(js_name = appendText)]
+pub fn append_text(path: &str, contents: &str) -> Result<(), JsValue> {
+    call_fs(
+        "appendFileSync",
+        &[JsValue::from_str(path), JsValue::from_str(contents)],
+    )?;
+    Ok(())
+}
+
 #[wasm_bindgen(js_name = readFile)]
 pub fn read_file(path: &str) -> Result<Vec<u8>, JsValue> {
     let contents = call_fs("readFileSync", &[JsValue::from_str(path)])?;

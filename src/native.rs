@@ -1,4 +1,4 @@
-use std::{fs, io, path::Path};
+use std::{fs, io, io::Write, path::Path};
 
 pub fn invalid_path_error(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.to_owned())
@@ -51,6 +51,14 @@ pub fn read_text(path: &str) -> io::Result<String> {
 
 pub fn write_text(path: &str, contents: &str) -> io::Result<()> {
     fs::write(path, contents)
+}
+
+pub fn append_text(path: &str, contents: &str) -> io::Result<()> {
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?
+        .write_all(contents.as_bytes())
 }
 
 pub fn read_file(path: &str) -> io::Result<Vec<u8>> {
