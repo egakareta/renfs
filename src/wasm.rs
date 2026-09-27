@@ -186,7 +186,8 @@ pub fn promises() -> JsValue {
     ZEN_PROMISES.with(JsValue::clone)
 }
 
-#[wasm_bindgen(js_name = default)]
+// wasm-bindgen reserves the module's default export for its initializer.
+#[wasm_bindgen(js_name = defaultFs)]
 pub fn default_fs() -> JsValue {
     ZEN_DEFAULT.with(JsValue::clone)
 }
