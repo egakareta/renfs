@@ -3,7 +3,7 @@
 "github:trunk-rs/trunk" = "latest"
 lefthook = "latest"
 oxfmt = "latest"
-rust = "latest"
+rust = { version = "latest", components = ["clippy", "rustfmt", "rust-src"] }
 
 [hooks]
 postinstall = ["lefthook install"]
