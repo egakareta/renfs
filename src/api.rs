@@ -270,7 +270,7 @@ impl Dir {
             .inner
             .as_ref()
             .ok_or_else(|| invalid_path_error("directory is closed"))?;
-        implementation::dir_close_sync(inner).map_err(Error::from)?;
+        implementation::dir_close_sync(inner)?;
         self.inner.take();
         Ok(())
     }
@@ -281,9 +281,7 @@ impl Dir {
             .inner
             .as_ref()
             .ok_or_else(|| invalid_path_error("directory is closed"))?;
-        implementation::dir_close(inner)
-            .await
-            .map_err(Error::from)?;
+        implementation::dir_close(inner).await?;
         self.inner.take();
         Ok(())
     }
@@ -337,7 +335,7 @@ impl Watcher {
             .inner
             .as_ref()
             .ok_or_else(|| invalid_path_error("watcher is closed"))?;
-        implementation::watch_close(inner).map_err(Error::from)?;
+        implementation::watch_close(inner)?;
         self.inner.take();
         Ok(())
     }
@@ -423,7 +421,7 @@ impl ReadStream {
             .inner
             .as_ref()
             .ok_or_else(|| invalid_path_error("read stream is destroyed"))?;
-        implementation::read_stream_destroy(inner).map_err(Error::from)?;
+        implementation::read_stream_destroy(inner)?;
         self.inner.take();
         Ok(())
     }
@@ -453,9 +451,7 @@ impl WriteStream {
             .inner
             .as_mut()
             .ok_or_else(|| invalid_path_error("write stream is closed"))?;
-        implementation::stream_end(inner)
-            .await
-            .map_err(Error::from)?;
+        implementation::stream_end(inner).await?;
         self.inner.take();
         Ok(())
     }
@@ -466,7 +462,7 @@ impl WriteStream {
             .inner
             .as_ref()
             .ok_or_else(|| invalid_path_error("write stream is closed"))?;
-        implementation::write_stream_destroy(inner).map_err(Error::from)?;
+        implementation::write_stream_destroy(inner)?;
         self.inner.take();
         Ok(())
     }
@@ -759,7 +755,7 @@ define_resource_handle! {
     /// Use [`fs::close`] to close explicitly and observe close errors.
     File(implementation::File) {
         from_inner,
-        drop |inner| implementation::close_sync(inner);
+        drop implementation::close_sync;
     }
 }
 
