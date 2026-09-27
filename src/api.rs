@@ -32,6 +32,18 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+fn invalid_path_error(message: &str) -> Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        implementation::invalid_path_error(message)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        implementation::invalid_path_error(message).into()
+    }
+}
+
 /// A filesystem directory whose operations use paths relative to its root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Directory {
@@ -66,16 +78,15 @@ impl Directory {
                 )
             })
         {
-            return Err(implementation::invalid_path_error(
+            return Err(invalid_path_error(
                 "directory operations require a relative path that stays inside the directory",
-            )
-            .into());
+            ));
         }
 
         let path = PathBuf::from(&self.path).join(relative);
-        path.to_str().map(str::to_owned).ok_or_else(|| {
-            implementation::invalid_path_error("resolved path is not valid UTF-8").into()
-        })
+        path.to_str()
+            .map(str::to_owned)
+            .ok_or_else(|| invalid_path_error("resolved path is not valid UTF-8"))
     }
 }
 
@@ -89,7 +100,15 @@ macro_rules! define_file_api {
             $(
                 fn $operation(&self, path: &str $(, $arg: $arg_type)*) -> Result<$output> {
                     let path = self.resolve_path(path)?;
-                    Ok(implementation::$operation(&path $(, $arg)*)?)
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        implementation::$operation(&path $(, $arg)*)
+                    }
+
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        Ok(implementation::$operation(&path $(, $arg)*)?)
+                    }
                 }
             )*
         }
