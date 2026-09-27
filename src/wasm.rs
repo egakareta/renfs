@@ -7,9 +7,10 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-use super::api::{Dir, Metadata, OpenOptions, StatFs, TempDir};
+use super::api::{Dirent, Metadata, OpenOptions, StatFs, TempDir};
 
 pub type File = u32;
+pub type Dir = JsValue;
 
 pub fn invalid_path_error(message: &str) -> JsValue {
     JsValue::from_str(message)
@@ -1104,41 +1105,54 @@ pub async fn readdir(path: &str) -> Result<Vec<String>, JsValue> {
     returned_names(call_fs_promise("readdir", &[JsValue::from_str(path)]).await?)
 }
 
-fn read_open_directory(directory: &JsValue) -> Result<Dir, JsValue> {
-    let read = Reflect::get(directory, &JsValue::from_str("readSync"))?.dyn_into::<Function>()?;
-    let close = Reflect::get(directory, &JsValue::from_str("closeSync"))?.dyn_into::<Function>()?;
-    let result = (|| {
-        let mut names = Vec::new();
-        loop {
-            let entry = read.call0(directory)?;
-            if entry.is_null() || entry.is_undefined() {
-                break;
-            }
-            names.push(returned_string(
-                Reflect::get(&entry, &JsValue::from_str("name"))?,
-                "Dirent.name",
-            )?);
-        }
-        Ok(Dir::from_names(names))
-    })();
-    let closed = close.call0(directory);
-    match result {
-        Err(error) => Err(error),
-        Ok(dir) => {
-            closed?;
-            Ok(dir)
-        }
+fn dir_entry(entry: JsValue) -> Result<Option<Dirent>, JsValue> {
+    if entry.is_null() || entry.is_undefined() {
+        return Ok(None);
     }
+    let name = returned_string(
+        Reflect::get(&entry, &JsValue::from_str("name"))?,
+        "Dirent.name",
+    )?;
+    Ok(Some(Dirent::from_parts(
+        name,
+        stats_bool(&entry, "isFile")?,
+        stats_bool(&entry, "isDirectory")?,
+        stats_bool(&entry, "isSymbolicLink")?,
+    )))
 }
 
-pub fn opendir_sync(path: &str) -> Result<Dir, JsValue> {
-    read_open_directory(&call_fs("opendirSync", &[JsValue::from_str(path)])?)
+pub fn dir_read_sync(dir: &mut Dir) -> Result<Option<Dirent>, JsValue> {
+    let read = Reflect::get(dir, &JsValue::from_str("readSync"))?.dyn_into::<Function>()?;
+    dir_entry(read.call0(dir)?)
 }
 
-pub async fn opendir(path: &str) -> Result<Dir, JsValue> {
-    let directory = call_fs_promise("opendir", &[JsValue::from_str(path)]).await?;
-    // The returned directory is read and closed before yielding the Rust iterator.
-    read_open_directory(&directory)
+pub async fn dir_read(dir: &mut Dir) -> Result<Option<Dirent>, JsValue> {
+    let read = Reflect::get(dir, &JsValue::from_str("read"))?.dyn_into::<Function>()?;
+    let promise = read.call0(dir)?.dyn_into::<js_sys::Promise>()?;
+    dir_entry(JsFuture::from(promise).await?)
+}
+
+pub fn dir_close_sync(dir: &Dir) -> Result<(), JsValue> {
+    let close = Reflect::get(dir, &JsValue::from_str("closeSync"))?.dyn_into::<Function>()?;
+    close.call0(dir)?;
+    Ok(())
+}
+
+pub async fn dir_close(dir: &Dir) -> Result<(), JsValue> {
+    let close = Reflect::get(dir, &JsValue::from_str("close"))?.dyn_into::<Function>()?;
+    let promise = close.call0(dir)?.dyn_into::<js_sys::Promise>()?;
+    JsFuture::from(promise).await?;
+    Ok(())
+}
+
+pub fn opendir_sync(path: &str) -> Result<super::api::Dir, JsValue> {
+    call_fs("opendirSync", &[JsValue::from_str(path)]).map(super::api::Dir::from_inner)
+}
+
+pub async fn opendir(path: &str) -> Result<super::api::Dir, JsValue> {
+    call_fs_promise("opendir", &[JsValue::from_str(path)])
+        .await
+        .map(super::api::Dir::from_inner)
 }
 
 pub fn rmdir_sync(path: &str) -> Result<(), JsValue> {
@@ -1183,28 +1197,11 @@ pub async fn realpath(path: &str) -> Result<String, JsValue> {
 }
 
 pub fn glob_sync(pattern: &str) -> Result<Vec<String>, JsValue> {
-    glob_names(call_fs("globSync", &[JsValue::from_str(pattern)])?, pattern)
+    returned_names(call_fs("globSync", &[JsValue::from_str(pattern)])?)
 }
 
 pub async fn glob(pattern: &str) -> Result<Vec<String>, JsValue> {
-    glob_names(
-        call_fs_callback("glob", &[JsValue::from_str(pattern)]).await?,
-        pattern,
-    )
-}
-
-fn glob_names(value: JsValue, pattern: &str) -> Result<Vec<String>, JsValue> {
-    let names = returned_names(value)?;
-    Ok(names
-        .into_iter()
-        .map(|name| {
-            if pattern.starts_with('/') && !name.starts_with('/') {
-                format!("/{name}")
-            } else {
-                name
-            }
-        })
-        .collect())
+    returned_names(call_fs_callback("glob", &[JsValue::from_str(pattern)]).await?)
 }
 
 pub fn glob_to_regex(pattern: &str) -> Result<String, JsValue> {
@@ -1224,12 +1221,76 @@ pub fn remove_file(path: &str) -> Result<(), JsValue> {
     Ok(())
 }
 
-#[wasm_bindgen(js_name = rename)]
-pub fn rename(from: &str, to: &str) -> Result<(), JsValue> {
+#[wasm_bindgen(js_name = renameSync)]
+pub fn rename_sync(from: &str, to: &str) -> Result<(), JsValue> {
     call_fs(
         "renameSync",
         &[JsValue::from_str(from), JsValue::from_str(to)],
     )?;
+    Ok(())
+}
+
+#[wasm_bindgen(js_name = rename)]
+pub async fn rename(from: &str, to: &str) -> Result<(), JsValue> {
+    call_fs_promise("rename", &[JsValue::from_str(from), JsValue::from_str(to)]).await?;
+    Ok(())
+}
+
+pub fn link_sync(original: &str, link: &str) -> Result<(), JsValue> {
+    call_fs(
+        "linkSync",
+        &[JsValue::from_str(original), JsValue::from_str(link)],
+    )?;
+    Ok(())
+}
+
+pub async fn link(original: &str, link: &str) -> Result<(), JsValue> {
+    call_fs_promise(
+        "link",
+        &[JsValue::from_str(original), JsValue::from_str(link)],
+    )
+    .await?;
+    Ok(())
+}
+
+pub fn symlink_sync(target: &str, link: &str) -> Result<(), JsValue> {
+    call_fs(
+        "symlinkSync",
+        &[JsValue::from_str(target), JsValue::from_str(link)],
+    )?;
+    Ok(())
+}
+
+pub async fn symlink(target: &str, link: &str) -> Result<(), JsValue> {
+    call_fs_promise(
+        "symlink",
+        &[JsValue::from_str(target), JsValue::from_str(link)],
+    )
+    .await?;
+    Ok(())
+}
+
+pub fn readlink_sync(path: &str) -> Result<String, JsValue> {
+    returned_string(
+        call_fs("readlinkSync", &[JsValue::from_str(path)])?,
+        "readlinkSync",
+    )
+}
+
+pub async fn readlink(path: &str) -> Result<String, JsValue> {
+    returned_string(
+        call_fs_promise("readlink", &[JsValue::from_str(path)]).await?,
+        "readlink",
+    )
+}
+
+pub fn unlink_sync(path: &str) -> Result<(), JsValue> {
+    call_fs("unlinkSync", &[JsValue::from_str(path)])?;
+    Ok(())
+}
+
+pub async fn unlink(path: &str) -> Result<(), JsValue> {
+    call_fs_promise("unlink", &[JsValue::from_str(path)]).await?;
     Ok(())
 }
 
@@ -1310,18 +1371,30 @@ mod tests {
         mkdir_sync(&nested, false).unwrap();
         assert_eq!(readdir_sync(&root).unwrap(), vec!["nested"]);
         assert_eq!(readdir(&root).await.unwrap(), vec!["nested"]);
-        assert_eq!(
-            opendir_sync(&root).unwrap().collect::<Vec<_>>(),
-            vec!["nested"]
-        );
-        assert_eq!(
-            opendir(&root).await.unwrap().collect::<Vec<_>>(),
-            vec!["nested"]
-        );
+        let mut opened = opendir_sync(&root).unwrap();
+        let entry = opened.read_sync().unwrap().unwrap();
+        assert_eq!(entry.name(), "nested");
+        assert!(entry.is_dir());
+        assert_eq!(opened.read_sync().unwrap(), None);
+        opened.close_sync().unwrap();
+        assert!(opened.read_sync().is_err());
+        let mut opened = opendir(&root).await.unwrap();
+        let entry = opened.read().await.unwrap().unwrap();
+        assert_eq!(entry.name(), "nested");
+        assert!(entry.is_dir());
+        assert_eq!(opened.read().await.unwrap(), None);
+        opened.close().await.unwrap();
+        assert!(opened.read().await.is_err());
         assert_eq!(realpath_sync(&nested).unwrap(), nested);
         assert_eq!(realpath(&nested).await.unwrap(), nested);
-        assert!(glob_sync(&format!("{root}/*")).unwrap().contains(&nested));
-        assert!(glob(&format!("{root}/*")).await.unwrap().contains(&nested));
+        let expected = nested.trim_start_matches('/').to_owned();
+        assert!(glob_sync(&format!("{root}/*")).unwrap().contains(&expected));
+        assert!(
+            glob(&format!("{root}/*"))
+                .await
+                .unwrap()
+                .contains(&expected)
+        );
         assert!(!glob_to_regex("*.txt").unwrap().is_empty());
         assert_eq!(
             normalize_path("/app/./nested/../file").unwrap(),
@@ -1392,6 +1465,56 @@ mod tests {
         lutimes(&link, time, time).await.unwrap();
         lchmod_sync(&link, 0o777).unwrap();
         lchmod(&link, 0o777).await.unwrap();
+        rm_sync(&root, true, false).unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn link_and_rename_apis_work() {
+        let root = test_path("links");
+        mkdir_sync(&root, false).unwrap();
+        let source = format!("{root}/source");
+        let hard = format!("{root}/hard");
+        let moved = format!("{root}/moved");
+        let symbolic = format!("{root}/symbolic");
+        write_text(&source, "value").unwrap();
+        link_sync(&source, &hard).unwrap();
+        rename(&hard, &moved).await.unwrap();
+        unlink_sync(&source).unwrap();
+        assert_eq!(read_text(&moved).unwrap(), "value");
+        link(&moved, &hard).await.unwrap();
+        rename_sync(&hard, &source).unwrap();
+        unlink(&source).await.unwrap();
+        symlink_sync(&moved, &symbolic).unwrap();
+        assert_eq!(readlink_sync(&symbolic).unwrap(), moved);
+        assert_eq!(readlink(&symbolic).await.unwrap(), moved);
+        unlink_sync(&symbolic).unwrap();
+        symlink(&moved, &symbolic).await.unwrap();
+        assert!(lstat_sync(&symbolic).unwrap().is_symlink());
+        unlink(&symbolic).await.unwrap();
+        unlink_sync(&moved).unwrap();
+        rm_sync(&root, true, false).unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn directory_symlink_targets_stay_relative_and_inside_root() {
+        let root = test_path("relative-links");
+        mkdir_sync(&root, false).unwrap();
+        let dir = crate::Directory::new(&root).unwrap();
+        dir.mkdir_sync("nested", false).unwrap();
+        dir.write_text("source", "value").unwrap();
+        dir.symlink_sync("../source", "nested/link").unwrap();
+        assert_eq!(dir.readlink_sync("nested/link").unwrap(), "../source");
+        assert_eq!(dir.read_text("nested/link").unwrap(), "value");
+        let mut opened = dir.opendir_sync("nested").unwrap();
+        let entry = opened.read_sync().unwrap().unwrap();
+        assert_eq!(entry.name(), "link");
+        assert!(entry.is_symlink());
+        opened.close_sync().unwrap();
+        dir.symlink("../missing", "nested/dangling").await.unwrap();
+        assert_eq!(dir.readlink("nested/dangling").await.unwrap(), "../missing");
+        assert!(dir.symlink_sync("../../outside", "nested/escape").is_err());
+        dir.unlink("nested/link").await.unwrap();
+        assert_eq!(dir.read_text("source").unwrap(), "value");
         rm_sync(&root, true, false).unwrap();
     }
 }

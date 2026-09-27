@@ -67,7 +67,7 @@ fn filesystem_operations_round_trip_text_binary_and_directories() {
 
     let renamed = PathBuf::from(&nested).join("renamed.txt");
     let renamed_path = renamed.to_str().unwrap();
-    rename(copy_path, renamed_path).unwrap();
+    rename_sync(copy_path, renamed_path).unwrap();
     assert!(!exists_sync(copy_path).unwrap());
     assert_eq!(read_text(renamed_path).unwrap(), "hello world");
 
