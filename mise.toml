@@ -48,6 +48,10 @@ run = "cargo test -- --nocapture"
 description = "Run .rs tests for wasm"
 run = "wasm-pack test --headless --chrome -- -- --nocapture"
 
+[tasks.vendor]
+description = "Regenerate vendored dependencies"
+run = "renfs vendor/zenfs.js"
+
 [env]
 _.path = { path = ["{{ exec(command='cmdshim path') }}"], tools = true }
 
