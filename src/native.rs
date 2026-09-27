@@ -2,6 +2,7 @@ use std::{
     fs,
     io::{self, IoSlice, IoSliceMut, Write as StdWrite},
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 use futures_lite::{
@@ -10,7 +11,7 @@ use futures_lite::{
     stream::StreamExt,
 };
 
-use super::api::{Metadata, OpenOptions};
+use super::api::{Dir, Metadata, OpenOptions, StatFs, TempDir};
 
 pub type File = async_fs::File;
 
@@ -357,22 +358,228 @@ pub async fn writev(file: &mut File, buffers: &[IoSlice<'_>]) -> io::Result<usiz
 
 pub fn fstat_sync(file: &File) -> io::Result<Metadata> {
     let metadata = block_on(file.metadata())?;
-    Ok(Metadata::from_parts(
+    Ok(metadata_parts(metadata))
+}
+
+pub async fn fstat(file: &File) -> io::Result<Metadata> {
+    Ok(metadata_parts(file.metadata().await?))
+}
+
+fn metadata_parts(metadata: fs::Metadata) -> Metadata {
+    Metadata::from_parts(
         metadata.len(),
         metadata.is_file(),
         metadata.is_dir(),
         metadata.file_type().is_symlink(),
-    ))
+    )
 }
 
-pub async fn fstat(file: &File) -> io::Result<Metadata> {
-    let metadata = file.metadata().await?;
-    Ok(Metadata::from_parts(
-        metadata.len(),
-        metadata.is_file(),
-        metadata.is_dir(),
-        false,
+pub fn stat_sync(path: &str) -> io::Result<Metadata> {
+    fs::metadata(path).map(metadata_parts)
+}
+pub async fn stat(path: &str) -> io::Result<Metadata> {
+    async_fs::metadata(path).await.map(metadata_parts)
+}
+pub fn lstat_sync(path: &str) -> io::Result<Metadata> {
+    fs::symlink_metadata(path).map(metadata_parts)
+}
+pub async fn lstat(path: &str) -> io::Result<Metadata> {
+    async_fs::symlink_metadata(path).await.map(metadata_parts)
+}
+
+#[cfg(unix)]
+fn c_path(path: &str) -> io::Result<std::ffi::CString> {
+    std::ffi::CString::new(path.as_bytes())
+        .map_err(|_| invalid_path_error("path contains a NUL byte"))
+}
+
+#[cfg(unix)]
+pub fn statfs_sync(path: &str) -> io::Result<StatFs> {
+    let path = c_path(path)?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(StatFs {
+        block_size: stat.f_bsize as u64,
+        blocks: stat.f_blocks as f64,
+        blocks_free: stat.f_bfree as f64,
+        blocks_available: stat.f_bavail as f64,
+        files: stat.f_files as f64,
+        files_free: stat.f_ffree as f64,
+    })
+}
+
+#[cfg(not(unix))]
+pub fn statfs_sync(_path: &str) -> io::Result<StatFs> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "statfs is unsupported on this platform",
     ))
+}
+pub async fn statfs(path: &str) -> io::Result<StatFs> {
+    statfs_sync(path)
+}
+
+#[cfg(unix)]
+fn permissions(mode: u32) -> fs::Permissions {
+    use std::os::unix::fs::PermissionsExt;
+    fs::Permissions::from_mode(mode)
+}
+#[cfg(not(unix))]
+fn permissions(mode: u32) -> fs::Permissions {
+    fs::Permissions::from_readonly(mode & 0o222 == 0)
+}
+
+pub fn chmod_sync(path: &str, mode: u32) -> io::Result<()> {
+    fs::set_permissions(path, permissions(mode))
+}
+pub async fn chmod(path: &str, mode: u32) -> io::Result<()> {
+    async_fs::set_permissions(path, permissions(mode)).await
+}
+pub fn fchmod_sync(file: &File, mode: u32) -> io::Result<()> {
+    block_on(file.set_permissions(permissions(mode)))
+}
+pub async fn fchmod(file: &File, mode: u32) -> io::Result<()> {
+    file.set_permissions(permissions(mode)).await
+}
+
+#[cfg(unix)]
+pub fn lchmod_sync(path: &str, mode: u32) -> io::Result<()> {
+    let path = c_path(path)?;
+    if unsafe {
+        libc::fchmodat(
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            mode as libc::mode_t,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } == 0
+    {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+#[cfg(not(unix))]
+pub fn lchmod_sync(_path: &str, _mode: u32) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "lchmod is unsupported on this platform",
+    ))
+}
+pub async fn lchmod(path: &str, mode: u32) -> io::Result<()> {
+    lchmod_sync(path, mode)
+}
+
+#[cfg(unix)]
+fn set_owner(path: &str, uid: u32, gid: u32, flags: libc::c_int) -> io::Result<()> {
+    let path = c_path(path)?;
+    if unsafe { libc::fchownat(libc::AT_FDCWD, path.as_ptr(), uid, gid, flags) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+#[cfg(unix)]
+pub fn chown_sync(path: &str, uid: u32, gid: u32) -> io::Result<()> {
+    set_owner(path, uid, gid, 0)
+}
+#[cfg(unix)]
+pub fn lchown_sync(path: &str, uid: u32, gid: u32) -> io::Result<()> {
+    set_owner(path, uid, gid, libc::AT_SYMLINK_NOFOLLOW)
+}
+#[cfg(not(unix))]
+pub fn chown_sync(_path: &str, _uid: u32, _gid: u32) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "chown is unsupported on this platform",
+    ))
+}
+#[cfg(not(unix))]
+pub fn lchown_sync(_path: &str, _uid: u32, _gid: u32) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "lchown is unsupported on this platform",
+    ))
+}
+pub async fn chown(path: &str, uid: u32, gid: u32) -> io::Result<()> {
+    chown_sync(path, uid, gid)
+}
+pub async fn lchown(path: &str, uid: u32, gid: u32) -> io::Result<()> {
+    lchown_sync(path, uid, gid)
+}
+
+#[cfg(unix)]
+pub fn fchown_sync(file: &File, uid: u32, gid: u32) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+#[cfg(not(unix))]
+pub fn fchown_sync(_file: &File, _uid: u32, _gid: u32) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "fchown is unsupported on this platform",
+    ))
+}
+pub async fn fchown(file: &File, uid: u32, gid: u32) -> io::Result<()> {
+    fchown_sync(file, uid, gid)
+}
+
+fn file_times(atime: SystemTime, mtime: SystemTime) -> (filetime::FileTime, filetime::FileTime) {
+    (
+        filetime::FileTime::from_system_time(atime),
+        filetime::FileTime::from_system_time(mtime),
+    )
+}
+pub fn utimes_sync(path: &str, atime: SystemTime, mtime: SystemTime) -> io::Result<()> {
+    let (atime, mtime) = file_times(atime, mtime);
+    filetime::set_file_times(path, atime, mtime)
+}
+pub async fn utimes(path: &str, atime: SystemTime, mtime: SystemTime) -> io::Result<()> {
+    utimes_sync(path, atime, mtime)
+}
+pub fn lutimes_sync(path: &str, atime: SystemTime, mtime: SystemTime) -> io::Result<()> {
+    let (atime, mtime) = file_times(atime, mtime);
+    filetime::set_symlink_file_times(path, atime, mtime)
+}
+pub async fn lutimes(path: &str, atime: SystemTime, mtime: SystemTime) -> io::Result<()> {
+    lutimes_sync(path, atime, mtime)
+}
+
+#[cfg(unix)]
+pub fn futimes_sync(file: &File, atime: SystemTime, mtime: SystemTime) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let (atime, mtime) = file_times(atime, mtime);
+    let times = [
+        libc::timespec {
+            tv_sec: atime.unix_seconds() as libc::time_t,
+            tv_nsec: atime.nanoseconds() as _,
+        },
+        libc::timespec {
+            tv_sec: mtime.unix_seconds() as libc::time_t,
+            tv_nsec: mtime.nanoseconds() as _,
+        },
+    ];
+    if unsafe { libc::futimens(file.as_raw_fd(), times.as_ptr()) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+#[cfg(not(unix))]
+pub fn futimes_sync(_file: &File, _atime: SystemTime, _mtime: SystemTime) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "futimes is unsupported on this platform",
+    ))
+}
+pub async fn futimes(file: &File, atime: SystemTime, mtime: SystemTime) -> io::Result<()> {
+    futimes_sync(file, atime, mtime)
 }
 
 pub fn fsync_sync(file: &File) -> io::Result<()> {
@@ -429,6 +636,219 @@ pub fn read_dir(path: &str) -> io::Result<Vec<String>> {
             })
         })
         .collect()
+}
+
+fn path_string(path: PathBuf) -> io::Result<String> {
+    path.into_os_string()
+        .into_string()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "path is not valid UTF-8"))
+}
+
+pub fn mkdir_sync(path: &str, recursive: bool) -> io::Result<()> {
+    if recursive {
+        fs::create_dir_all(path)
+    } else {
+        fs::create_dir(path)
+    }
+}
+
+pub async fn mkdir(path: &str, recursive: bool) -> io::Result<()> {
+    if recursive {
+        async_fs::create_dir_all(path).await
+    } else {
+        async_fs::create_dir(path).await
+    }
+}
+
+pub fn mkdtemp_sync(prefix: &str) -> io::Result<String> {
+    let path = Path::new(prefix);
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .ok_or_else(|| invalid_path_error("temporary directory prefix must include a name"))?;
+    path_string(
+        tempfile::Builder::new()
+            .prefix(name)
+            .tempdir_in(parent)?
+            .keep(),
+    )
+}
+
+pub async fn mkdtemp(prefix: &str) -> io::Result<String> {
+    mkdtemp_sync(prefix)
+}
+
+pub fn mkdtemp_disposable_sync(prefix: &str) -> io::Result<TempDir> {
+    Ok(TempDir {
+        path: mkdtemp_sync(prefix)?,
+    })
+}
+
+pub fn readdir_sync(path: &str) -> io::Result<Vec<String>> {
+    read_dir(path)
+}
+
+pub async fn readdir(path: &str) -> io::Result<Vec<String>> {
+    let mut entries = async_fs::read_dir(path).await?;
+    let mut names = Vec::new();
+    while let Some(entry) = entries.next().await {
+        names.push(entry?.file_name().into_string().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry name is not valid UTF-8",
+            )
+        })?);
+    }
+    Ok(names)
+}
+
+pub fn opendir_sync(path: &str) -> io::Result<Dir> {
+    readdir_sync(path).map(Dir::from_names)
+}
+pub async fn opendir(path: &str) -> io::Result<Dir> {
+    readdir(path).await.map(Dir::from_names)
+}
+
+pub fn rmdir_sync(path: &str) -> io::Result<()> {
+    fs::remove_dir(path)
+}
+pub async fn rmdir(path: &str) -> io::Result<()> {
+    async_fs::remove_dir(path).await
+}
+
+pub fn rm_sync(path: &str, recursive: bool, force: bool) -> io::Result<()> {
+    let result = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => {
+            if recursive {
+                fs::remove_dir_all(path)
+            } else {
+                fs::remove_dir(path)
+            }
+        }
+        Ok(_) => fs::remove_file(path),
+        Err(error) => Err(error),
+    };
+    if force
+        && result
+            .as_ref()
+            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+    {
+        Ok(())
+    } else {
+        result
+    }
+}
+
+pub async fn rm(path: &str, recursive: bool, force: bool) -> io::Result<()> {
+    let result = match async_fs::symlink_metadata(path).await {
+        Ok(metadata) if metadata.is_dir() => {
+            if recursive {
+                async_fs::remove_dir_all(path).await
+            } else {
+                async_fs::remove_dir(path).await
+            }
+        }
+        Ok(_) => async_fs::remove_file(path).await,
+        Err(error) => Err(error),
+    };
+    if force
+        && result
+            .as_ref()
+            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+    {
+        Ok(())
+    } else {
+        result
+    }
+}
+
+pub fn realpath_sync(path: &str) -> io::Result<String> {
+    path_string(fs::canonicalize(path)?)
+}
+pub async fn realpath(path: &str) -> io::Result<String> {
+    path_string(async_fs::canonicalize(path).await?)
+}
+
+pub fn glob_sync(pattern: &str) -> io::Result<Vec<String>> {
+    glob::glob(pattern)
+        .map_err(|error| invalid_path_error(&error.to_string()))?
+        .map(|entry| path_string(entry.map_err(|error| io::Error::other(error))?))
+        .collect()
+}
+
+pub async fn glob(pattern: &str) -> io::Result<Vec<String>> {
+    glob_sync(pattern)
+}
+
+pub fn glob_to_regex(pattern: &str) -> io::Result<String> {
+    glob::Pattern::new(pattern).map_err(|error| invalid_path_error(&error.to_string()))?;
+    let mut result = String::from("^");
+    let mut chars = pattern.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '*' if chars.peek() == Some(&'*') => {
+                chars.next();
+                if chars.peek() == Some(&'/') {
+                    chars.next();
+                    result.push_str("(?:.*/)?");
+                } else {
+                    result.push_str(".*");
+                }
+            }
+            '*' => result.push_str("[^/]*"),
+            '?' => result.push_str("[^/]"),
+            '[' => {
+                result.push('[');
+                if chars.peek() == Some(&'!') {
+                    chars.next();
+                    result.push('^');
+                }
+                for item in chars.by_ref() {
+                    result.push(item);
+                    if item == ']' {
+                        break;
+                    }
+                }
+            }
+            '.' | '+' | '(' | ')' | '$' | '^' | '|' | '{' | '}' | '\\' => {
+                result.push('\\');
+                result.push(character);
+            }
+            _ => result.push(character),
+        }
+    }
+    result.push('$');
+    Ok(result)
+}
+
+pub fn normalize_path(path: &str) -> io::Result<String> {
+    let mut parts = Vec::new();
+    let absolute = Path::new(path).is_absolute();
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::CurDir | std::path::Component::RootDir => {}
+            std::path::Component::ParentDir if parts.last().is_some_and(|part| *part != "..") => {
+                parts.pop();
+            }
+            std::path::Component::ParentDir if !absolute => parts.push(".."),
+            std::path::Component::Normal(part) => parts.push(
+                part.to_str()
+                    .ok_or_else(|| invalid_path_error("path is not valid UTF-8"))?,
+            ),
+            _ => {}
+        }
+    }
+    let joined = parts.join("/");
+    Ok(if absolute {
+        format!("/{joined}")
+    } else if joined.is_empty() {
+        ".".to_owned()
+    } else {
+        joined
+    })
 }
 
 pub fn remove_file(path: &str) -> io::Result<()> {

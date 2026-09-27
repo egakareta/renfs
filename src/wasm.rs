@@ -1,10 +1,13 @@
 use js_sys::{Array, Function, Object, Reflect, Uint8Array};
-use std::io::{IoSlice, IoSliceMut};
+use std::{
+    io::{IoSlice, IoSliceMut},
+    time::{SystemTime, UNIX_EPOCH},
+};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-use super::api::{Metadata, OpenOptions};
+use super::api::{Dir, Metadata, OpenOptions, StatFs, TempDir};
 
 pub type File = u32;
 
@@ -67,6 +70,10 @@ macro_rules! zenfs_setup_imports {
             fn zenfs_attach_fs(channel: &JsValue, filesystem: &JsValue) -> Result<(), JsValue>;
             #[wasm_bindgen(catch, js_name = detachFS)]
             fn zenfs_detach_fs(channel: &JsValue, filesystem: &JsValue) -> Result<(), JsValue>;
+            #[wasm_bindgen(catch, js_name = globToRegex)]
+            fn zenfs_glob_to_regex(pattern: &str) -> Result<JsValue, JsValue>;
+            #[wasm_bindgen(catch, js_name = normalizePath)]
+            fn zenfs_normalize_path(path: &str) -> Result<String, JsValue>;
 
             #[wasm_bindgen(thread_local_v2, js_name = mounts)]
             static ZEN_MOUNTS: JsValue;
@@ -265,6 +272,34 @@ fn mkdir_options(recursive: bool) -> Result<JsValue, JsValue> {
         &JsValue::from_bool(recursive),
     )?;
     Ok(options.into())
+}
+
+fn removal_options(recursive: bool, force: bool) -> Result<JsValue, JsValue> {
+    let options = Object::new();
+    Reflect::set(
+        &options,
+        &JsValue::from_str("recursive"),
+        &JsValue::from_bool(recursive),
+    )?;
+    Reflect::set(
+        &options,
+        &JsValue::from_str("force"),
+        &JsValue::from_bool(force),
+    )?;
+    Ok(options.into())
+}
+
+fn returned_string(value: JsValue, method: &str) -> Result<String, JsValue> {
+    value
+        .as_string()
+        .ok_or_else(|| JsValue::from_str(&format!("ZenFS {method} did not return a string")))
+}
+
+fn returned_names(value: JsValue) -> Result<Vec<String>, JsValue> {
+    Array::from(&value)
+        .iter()
+        .map(|value| returned_string(value, "directory listing"))
+        .collect()
 }
 
 fn descriptor_value(fd: &File) -> JsValue {
@@ -831,6 +866,113 @@ fn metadata_from_stats(stats: &JsValue) -> Result<Metadata, JsValue> {
     ))
 }
 
+fn statfs_field(stats: &JsValue, field: &str) -> Result<f64, JsValue> {
+    let value = Reflect::get(stats, &JsValue::from_str(field))?;
+    value
+        .as_f64()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .ok_or_else(|| {
+            JsValue::from_str(&format!(
+                "ZenFS statfs field {field} was not a non-negative number: {value:?}"
+            ))
+        })
+}
+
+fn statfs_from_stats(stats: &JsValue) -> Result<StatFs, JsValue> {
+    Ok(StatFs {
+        block_size: statfs_field(stats, "bsize")? as u64,
+        blocks: statfs_field(stats, "blocks")?,
+        blocks_free: statfs_field(stats, "bfree")?,
+        blocks_available: statfs_field(stats, "bavail")?,
+        files: statfs_field(stats, "files")?,
+        files_free: statfs_field(stats, "ffree")?,
+    })
+}
+
+fn js_time(time: SystemTime) -> JsValue {
+    let seconds = match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs_f64(),
+        Err(error) => -error.duration().as_secs_f64(),
+    };
+    JsValue::from_f64(seconds)
+}
+
+fn number(value: u32) -> JsValue {
+    JsValue::from_f64(f64::from(value))
+}
+
+macro_rules! path_metadata {
+    ($async_name:ident, $sync_name:ident, $js_name:literal, $js_sync:literal, $output:ty, $convert:ident) => {
+        pub fn $sync_name(path: &str) -> Result<$output, JsValue> {
+            $convert(&call_fs($js_sync, &[JsValue::from_str(path)])?)
+        }
+        pub async fn $async_name(path: &str) -> Result<$output, JsValue> {
+            $convert(&call_fs_promise($js_name, &[JsValue::from_str(path)]).await?)
+        }
+    };
+}
+
+path_metadata!(
+    stat,
+    stat_sync,
+    "stat",
+    "statSync",
+    Metadata,
+    metadata_from_stats
+);
+path_metadata!(
+    lstat,
+    lstat_sync,
+    "lstat",
+    "lstatSync",
+    Metadata,
+    metadata_from_stats
+);
+path_metadata!(
+    statfs,
+    statfs_sync,
+    "statfs",
+    "statfsSync",
+    StatFs,
+    statfs_from_stats
+);
+
+macro_rules! metadata_change {
+    ($async_name:ident, $sync_name:ident, $js_name:literal, $js_sync:literal, ($($arg:ident: $type:ty => $value:expr),*)) => {
+        pub fn $sync_name(path: &str, $($arg: $type),*) -> Result<(), JsValue> {
+            call_fs($js_sync, &[JsValue::from_str(path), $($value),*])?;
+            Ok(())
+        }
+        pub async fn $async_name(path: &str, $($arg: $type),*) -> Result<(), JsValue> {
+            call_fs_promise($js_name, &[JsValue::from_str(path), $($value),*]).await?;
+            Ok(())
+        }
+    };
+}
+
+metadata_change!(chmod, chmod_sync, "chmod", "chmodSync", (mode: u32 => number(mode)));
+metadata_change!(lchmod, lchmod_sync, "lchmod", "lchmodSync", (mode: u32 => number(mode)));
+metadata_change!(chown, chown_sync, "chown", "chownSync", (uid: u32 => number(uid), gid: u32 => number(gid)));
+metadata_change!(lchown, lchown_sync, "lchown", "lchownSync", (uid: u32 => number(uid), gid: u32 => number(gid)));
+metadata_change!(utimes, utimes_sync, "utimes", "utimesSync", (atime: SystemTime => js_time(atime), mtime: SystemTime => js_time(mtime)));
+metadata_change!(lutimes, lutimes_sync, "lutimes", "lutimesSync", (atime: SystemTime => js_time(atime), mtime: SystemTime => js_time(mtime)));
+
+macro_rules! descriptor_metadata_change {
+    ($async_name:ident, $sync_name:ident, $js_name:literal, $js_sync:literal, ($($arg:ident: $type:ty => $value:expr),*)) => {
+        pub fn $sync_name(file: &File, $($arg: $type),*) -> Result<(), JsValue> {
+            call_fs($js_sync, &[descriptor_value(file), $($value),*])?;
+            Ok(())
+        }
+        pub async fn $async_name(file: &File, $($arg: $type),*) -> Result<(), JsValue> {
+            call_fs_callback($js_name, &[descriptor_value(file), $($value),*]).await?;
+            Ok(())
+        }
+    };
+}
+descriptor_metadata_change!(fchmod, fchmod_sync, "fchmod", "fchmodSync", (mode: u32 => number(mode)));
+descriptor_metadata_change!(fchown, fchown_sync, "fchown", "fchownSync", (uid: u32 => number(uid), gid: u32 => number(gid)));
+descriptor_metadata_change!(futimes, futimes_sync, "futimes", "futimesSync", (atime: SystemTime => js_time(atime), mtime: SystemTime => js_time(mtime)));
+
 pub fn fstat_sync(file: &File) -> Result<Metadata, JsValue> {
     let stats = call_fs("fstatSync", &[descriptor_value(file)])?;
     metadata_from_stats(&stats)
@@ -911,15 +1053,169 @@ pub fn create_dir_all(path: &str) -> Result<(), JsValue> {
 
 #[wasm_bindgen(js_name = readDir)]
 pub fn read_dir(path: &str) -> Result<Vec<String>, JsValue> {
-    let entries = call_fs("readdirSync", &[JsValue::from_str(path)])?;
-    Array::from(&entries)
-        .iter()
-        .map(|entry| {
-            entry
-                .as_string()
-                .ok_or_else(|| JsValue::from_str("ZenFS returned a non-string directory entry"))
+    readdir_sync(path)
+}
+
+pub fn mkdir_sync(path: &str, recursive: bool) -> Result<(), JsValue> {
+    call_fs(
+        "mkdirSync",
+        &[JsValue::from_str(path), mkdir_options(recursive)?],
+    )?;
+    Ok(())
+}
+
+pub async fn mkdir(path: &str, recursive: bool) -> Result<(), JsValue> {
+    call_fs_promise(
+        "mkdir",
+        &[JsValue::from_str(path), mkdir_options(recursive)?],
+    )
+    .await?;
+    Ok(())
+}
+
+pub fn mkdtemp_sync(prefix: &str) -> Result<String, JsValue> {
+    returned_string(
+        call_fs("mkdtempSync", &[JsValue::from_str(prefix)])?,
+        "mkdtempSync",
+    )
+}
+
+pub async fn mkdtemp(prefix: &str) -> Result<String, JsValue> {
+    returned_string(
+        call_fs_promise("mkdtemp", &[JsValue::from_str(prefix)]).await?,
+        "mkdtemp",
+    )
+}
+
+pub fn mkdtemp_disposable_sync(prefix: &str) -> Result<TempDir, JsValue> {
+    let value = call_fs("mkdtempDisposableSync", &[JsValue::from_str(prefix)])?;
+    let path = returned_string(
+        Reflect::get(&value, &JsValue::from_str("path"))?,
+        "mkdtempDisposableSync",
+    )?;
+    Ok(TempDir { path })
+}
+
+pub fn readdir_sync(path: &str) -> Result<Vec<String>, JsValue> {
+    returned_names(call_fs("readdirSync", &[JsValue::from_str(path)])?)
+}
+
+pub async fn readdir(path: &str) -> Result<Vec<String>, JsValue> {
+    returned_names(call_fs_promise("readdir", &[JsValue::from_str(path)]).await?)
+}
+
+fn read_open_directory(directory: &JsValue) -> Result<Dir, JsValue> {
+    let read = Reflect::get(directory, &JsValue::from_str("readSync"))?.dyn_into::<Function>()?;
+    let close = Reflect::get(directory, &JsValue::from_str("closeSync"))?.dyn_into::<Function>()?;
+    let result = (|| {
+        let mut names = Vec::new();
+        loop {
+            let entry = read.call0(directory)?;
+            if entry.is_null() || entry.is_undefined() {
+                break;
+            }
+            names.push(returned_string(
+                Reflect::get(&entry, &JsValue::from_str("name"))?,
+                "Dirent.name",
+            )?);
+        }
+        Ok(Dir::from_names(names))
+    })();
+    let closed = close.call0(directory);
+    match result {
+        Err(error) => Err(error),
+        Ok(dir) => {
+            closed?;
+            Ok(dir)
+        }
+    }
+}
+
+pub fn opendir_sync(path: &str) -> Result<Dir, JsValue> {
+    read_open_directory(&call_fs("opendirSync", &[JsValue::from_str(path)])?)
+}
+
+pub async fn opendir(path: &str) -> Result<Dir, JsValue> {
+    let directory = call_fs_promise("opendir", &[JsValue::from_str(path)]).await?;
+    // The returned directory is read and closed before yielding the Rust iterator.
+    read_open_directory(&directory)
+}
+
+pub fn rmdir_sync(path: &str) -> Result<(), JsValue> {
+    call_fs("rmdirSync", &[JsValue::from_str(path)])?;
+    Ok(())
+}
+
+pub async fn rmdir(path: &str) -> Result<(), JsValue> {
+    call_fs_promise("rmdir", &[JsValue::from_str(path)]).await?;
+    Ok(())
+}
+
+pub fn rm_sync(path: &str, recursive: bool, force: bool) -> Result<(), JsValue> {
+    call_fs(
+        "rmSync",
+        &[JsValue::from_str(path), removal_options(recursive, force)?],
+    )?;
+    Ok(())
+}
+
+pub async fn rm(path: &str, recursive: bool, force: bool) -> Result<(), JsValue> {
+    call_fs_promise(
+        "rm",
+        &[JsValue::from_str(path), removal_options(recursive, force)?],
+    )
+    .await?;
+    Ok(())
+}
+
+pub fn realpath_sync(path: &str) -> Result<String, JsValue> {
+    returned_string(
+        call_fs("realpathSync", &[JsValue::from_str(path)])?,
+        "realpathSync",
+    )
+}
+
+pub async fn realpath(path: &str) -> Result<String, JsValue> {
+    returned_string(
+        call_fs_promise("realpath", &[JsValue::from_str(path)]).await?,
+        "realpath",
+    )
+}
+
+pub fn glob_sync(pattern: &str) -> Result<Vec<String>, JsValue> {
+    glob_names(call_fs("globSync", &[JsValue::from_str(pattern)])?, pattern)
+}
+
+pub async fn glob(pattern: &str) -> Result<Vec<String>, JsValue> {
+    glob_names(
+        call_fs_callback("glob", &[JsValue::from_str(pattern)]).await?,
+        pattern,
+    )
+}
+
+fn glob_names(value: JsValue, pattern: &str) -> Result<Vec<String>, JsValue> {
+    let names = returned_names(value)?;
+    Ok(names
+        .into_iter()
+        .map(|name| {
+            if pattern.starts_with('/') && !name.starts_with('/') {
+                format!("/{name}")
+            } else {
+                name
+            }
         })
-        .collect()
+        .collect())
+}
+
+pub fn glob_to_regex(pattern: &str) -> Result<String, JsValue> {
+    returned_string(
+        Reflect::get(&zenfs_glob_to_regex(pattern)?, &JsValue::from_str("source"))?,
+        "globToRegex",
+    )
+}
+
+pub fn normalize_path(path: &str) -> Result<String, JsValue> {
+    zenfs_normalize_path(path)
 }
 
 #[wasm_bindgen(js_name = removeFile)]
@@ -1004,6 +1300,99 @@ mod tests {
         assert_eq!(&contents, b"async file");
         assert_eq!(fstat(&file).await.unwrap().len(), contents.len() as u64);
         close(&file).await.unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn directory_and_path_apis_work() {
+        let root = test_path("directory");
+        mkdir(&root, false).await.unwrap();
+        let nested = format!("{root}/nested");
+        mkdir_sync(&nested, false).unwrap();
+        assert_eq!(readdir_sync(&root).unwrap(), vec!["nested"]);
+        assert_eq!(readdir(&root).await.unwrap(), vec!["nested"]);
+        assert_eq!(
+            opendir_sync(&root).unwrap().collect::<Vec<_>>(),
+            vec!["nested"]
+        );
+        assert_eq!(
+            opendir(&root).await.unwrap().collect::<Vec<_>>(),
+            vec!["nested"]
+        );
+        assert_eq!(realpath_sync(&nested).unwrap(), nested);
+        assert_eq!(realpath(&nested).await.unwrap(), nested);
+        assert!(glob_sync(&format!("{root}/*")).unwrap().contains(&nested));
+        assert!(glob(&format!("{root}/*")).await.unwrap().contains(&nested));
+        assert!(!glob_to_regex("*.txt").unwrap().is_empty());
+        assert_eq!(
+            normalize_path("/app/./nested/../file").unwrap(),
+            "/app/file"
+        );
+        rmdir(&nested).await.unwrap();
+        rm_sync(&root, true, false).unwrap();
+        rm(&root, true, true).await.unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn temporary_directory_apis_work() {
+        let prefix = test_path("temporary");
+        let first = mkdtemp_sync(&prefix).unwrap();
+        let second = mkdtemp(&prefix).await.unwrap();
+        assert_ne!(first, second);
+        let disposable = mkdtemp_disposable_sync(&prefix).unwrap();
+        let path = disposable.path().to_owned();
+        assert!(exists_sync(&path).unwrap());
+        drop(disposable);
+        assert!(!exists_sync(&path).unwrap());
+        rm_sync(&first, true, false).unwrap();
+        rm_sync(&second, true, false).unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn metadata_permissions_and_timestamps_work() {
+        let root = test_path("metadata");
+        mkdir_sync(&root, false).unwrap();
+        let path = format!("{root}/file");
+        write_file_sync(&path, b"hello").unwrap();
+        assert_eq!(stat_sync(&path).unwrap().len(), 5);
+        assert!(lstat_sync(&path).unwrap().is_file());
+        assert_eq!(stat(&path).await.unwrap().len(), 5);
+        assert!(lstat(&path).await.unwrap().is_file());
+        assert!(statfs_sync(&path).unwrap().block_size > 0);
+        assert!(statfs(&path).await.unwrap().blocks > 0.0);
+        let time = UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+        chmod_sync(&path, 0o640).unwrap();
+        chmod(&path, 0o600).await.unwrap();
+        chown_sync(&path, 1, 1).unwrap();
+        chown(&path, 1, 1).await.unwrap();
+        utimes_sync(&path, time, time).unwrap();
+        utimes(&path, time, time).await.unwrap();
+        let options = OpenOptions {
+            read: true,
+            ..OpenOptions::default()
+        };
+        let file = open_sync(&path, &options).unwrap();
+        fchmod_sync(&file, 0o644).unwrap();
+        fchmod(&file, 0o600).await.unwrap();
+        fchown_sync(&file, 1, 1).unwrap();
+        fchown(&file, 1, 1).await.unwrap();
+        futimes_sync(&file, time, time).unwrap();
+        futimes(&file, time, time).await.unwrap();
+        close_sync(file).unwrap();
+        let link = format!("{root}/link");
+        call_fs(
+            "symlinkSync",
+            &[JsValue::from_str(&path), JsValue::from_str(&link)],
+        )
+        .unwrap();
+        assert!(lstat_sync(&link).unwrap().is_symlink());
+        assert!(stat_sync(&link).unwrap().is_file());
+        lchown_sync(&link, 1, 1).unwrap();
+        lchown(&link, 1, 1).await.unwrap();
+        lutimes_sync(&link, time, time).unwrap();
+        lutimes(&link, time, time).await.unwrap();
+        lchmod_sync(&link, 0o777).unwrap();
+        lchmod(&link, 0o777).await.unwrap();
+        rm_sync(&root, true, false).unwrap();
     }
 }
 

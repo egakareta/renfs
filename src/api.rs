@@ -146,6 +146,54 @@ pub struct Directory {
     path: String,
 }
 
+/// An opened directory, yielding its entries one at a time.
+#[derive(Debug)]
+pub struct Dir {
+    entries: std::vec::IntoIter<String>,
+}
+
+impl Iterator for Dir {
+    type Item = String;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.entries.next()
+    }
+}
+
+impl Dir {
+    pub(crate) fn from_names(names: Vec<String>) -> Self {
+        Self {
+            entries: names.into_iter(),
+        }
+    }
+}
+
+/// A temporary directory removed when this value is dropped.
+#[derive(Debug)]
+pub struct TempDir {
+    pub(crate) path: String,
+}
+
+impl TempDir {
+    /// Returns the path of the temporary directory.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Keeps the directory on disk and returns its path.
+    pub fn keep(mut self) -> String {
+        std::mem::take(&mut self.path)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        if !self.path.is_empty() {
+            let _ = implementation::rm_sync(&self.path, true, true);
+        }
+    }
+}
+
 impl Directory {
     /// Wraps a path as a directory.
     ///
@@ -360,9 +408,18 @@ impl File {
         async_shared {
             /// Queries metadata about the underlying file.
             metadata() -> Metadata = fstat;
+            /// Changes the permissions of the open file.
+            fchmod(mode: u32) -> () = fchmod;
+            /// Changes the owner and group of the open file.
+            fchown(uid: u32, gid: u32) -> () = fchown;
+            /// Changes the access and modification times of the open file.
+            futimes(atime: std::time::SystemTime, mtime: std::time::SystemTime) -> () = futimes;
         }
         sync_shared {
             metadata_sync() -> Metadata = fstat_sync;
+            fchmod_sync(mode: u32) -> () = fchmod_sync;
+            fchown_sync(uid: u32, gid: u32) -> () = fchown_sync;
+            futimes_sync(atime: std::time::SystemTime, mtime: std::time::SystemTime) -> () = futimes_sync;
         }
     }
 }
@@ -375,13 +432,30 @@ impl Drop for File {
     }
 }
 
-/// Metadata about an open file.
+/// Metadata about a filesystem entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Metadata {
     len: u64,
     is_file: bool,
     is_dir: bool,
     is_symlink: bool,
+}
+
+/// Information about the filesystem containing a path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StatFs {
+    /// Fundamental filesystem block size in bytes.
+    pub block_size: u64,
+    /// Total blocks in the filesystem.
+    pub blocks: f64,
+    /// Free blocks in the filesystem.
+    pub blocks_free: f64,
+    /// Blocks available to unprivileged users.
+    pub blocks_available: f64,
+    /// Total file nodes in the filesystem.
+    pub files: f64,
+    /// Free file nodes in the filesystem.
+    pub files_free: f64,
 }
 
 impl Metadata {
@@ -558,12 +632,11 @@ macro_rules! define_file_api {
         /// Filesystem manipulation operations.
         pub mod fs {
             use super::{
-                Blob, File, FileOps, Metadata, OpenOptions, Result, RootFileSystem,
+                Blob, Dir, File, FileOps, Metadata, OpenOptions, Result, RootFileSystem, StatFs, TempDir,
             };
 
             #[cfg(target_arch = "wasm32")]
             use wasm_bindgen::JsValue;
-            #[cfg(target_arch = "wasm32")]
             use crate::implementation;
 
             /// Check whether a path exists, without checking permissions.
@@ -722,6 +795,16 @@ macro_rules! define_file_api {
                 implementation::constants()
             }
 
+            /// Converts a glob pattern into a regular expression source.
+            pub fn glob_to_regex(pattern: &str) -> Result<String> {
+                implementation_result!(implementation::glob_to_regex(pattern))
+            }
+
+            /// Normalizes the components of a path.
+            pub fn normalize_path(path: &str) -> Result<String> {
+                implementation_result!(implementation::normalize_path(path))
+            }
+
             /// Opens a file with the provided options.
             pub async fn open(path: &str, options: &OpenOptions) -> Result<File> {
                 FileOps::open(&RootFileSystem, path, options).await
@@ -760,6 +843,21 @@ macro_rules! define_file_api {
             )*
 
             define_file_handle_api! {
+                /// Changes the permissions of an open file.
+                fchmod => fchmod_sync(file: &File, mode: u32) -> () {
+                    async { file.fchmod(mode) }
+                    sync { file.fchmod_sync(mode) }
+                };
+                /// Changes the owner and group of an open file.
+                fchown => fchown_sync(file: &File, uid: u32, gid: u32) -> () {
+                    async { file.fchown(uid, gid) }
+                    sync { file.fchown_sync(uid, gid) }
+                };
+                /// Changes the access and modification times of an open file.
+                futimes => futimes_sync(file: &File, atime: std::time::SystemTime, mtime: std::time::SystemTime) -> () {
+                    async { file.futimes(atime, mtime) }
+                    sync { file.futimes_sync(atime, mtime) }
+                };
                 /// Closes an open file.
                 close => close_sync(file: File) -> () {
                     async { super::close_file(file) }
@@ -831,6 +929,8 @@ define_file_api! {
     ///
     /// The entries are collected into a vector, and names that are not valid UTF-8 cause an error.
     read_dir([path]) -> Vec<String>;
+    /// Creates a temporary directory removed when its guard is dropped.
+    mkdtemp_disposable_sync([prefix]) -> TempDir;
     /// Removes a file from the filesystem.
     remove_file([path]) -> ();
     /// Renames a file or directory to a new name, replacing the original file if `to` already exists.
@@ -865,6 +965,41 @@ define_file_api! {
     copy_file([from, to]) -> () => copy_file_sync;
     /// Recursively copies a file or directory to a new path.
     cp([from, to]) -> () => cp_sync;
+    /// Creates a directory, creating missing parent directories when `recursive` is true.
+    mkdir([path], recursive: bool) -> () => mkdir_sync;
+    /// Creates a uniquely named temporary directory by appending to `prefix`.
+    mkdtemp([prefix]) -> String => mkdtemp_sync;
+    /// Opens a directory for iteration over its entry names.
+    opendir([path]) -> Dir => opendir_sync;
+    /// Reads the names of the entries in a directory.
+    readdir([path]) -> Vec<String> => readdir_sync;
+    /// Removes an empty directory.
+    rmdir([path]) -> () => rmdir_sync;
+    /// Removes a file or directory, optionally recursively or ignoring missing paths.
+    rm([path], recursive: bool, force: bool) -> () => rm_sync;
+    /// Returns the canonical, absolute form of a path with all intermediate
+    /// components normalized and symbolic links resolved.
+    realpath([path]) -> String => realpath_sync;
+    /// Returns paths matching a glob pattern.
+    glob([path]) -> Vec<String> => glob_sync;
+    /// Given a path, queries the file system to get information about a file, directory, etc.
+    stat([path]) -> Metadata => stat_sync;
+    /// Queries the metadata about a file without following symlinks.
+    lstat([path]) -> Metadata => lstat_sync;
+    /// Returns information about the filesystem containing the specified path.
+    statfs([path]) -> StatFs => statfs_sync;
+    /// Changes the permissions found on a file or a directory.
+    chmod([path], mode: u32) -> () => chmod_sync;
+    /// Changes the permissions of a symbolic link itself (if supported).
+    lchmod([path], mode: u32) -> () => lchmod_sync;
+    /// Changes the owner and group of a file or directory.
+    chown([path], uid: u32, gid: u32) -> () => chown_sync;
+    /// Changes the owner and group of a symbolic link itself.
+    lchown([path], uid: u32, gid: u32) -> () => lchown_sync;
+    /// Changes the timestamps of the file or directory at the specified path.
+    utimes([path], atime: std::time::SystemTime, mtime: std::time::SystemTime) -> () => utimes_sync;
+    /// Changes the access and modification times of a symbolic link itself.
+    lutimes([path], atime: std::time::SystemTime, mtime: std::time::SystemTime) -> () => lutimes_sync;
     /// Truncates a file to the specified length.
     truncate([path], len: u64) -> () => truncate_sync;
   }
@@ -916,6 +1051,180 @@ pub fn app_dir(name: &str) -> Result<Directory> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    #[test]
+    fn metadata_stat_and_times_cover_path_and_descriptor_variants() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let temp = tempdir().unwrap();
+        let dir = Directory::new(temp.path()).unwrap();
+        dir.write_text("file", "hello").unwrap();
+        assert_eq!(dir.stat_sync("file").unwrap().len(), 5);
+        assert!(dir.lstat_sync("file").unwrap().is_file());
+        assert!(dir.statfs_sync("file").unwrap().block_size > 0);
+        let atime = UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+        let mtime = atime + Duration::from_secs(100);
+        dir.utimes_sync("file", atime, mtime).unwrap();
+        let path = temp.path().join("file");
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), mtime);
+        let mut options = OpenOptions::new();
+        options.read(true);
+        let file = dir.open_sync("file", &options).unwrap();
+        fs::futimes_sync(&file, atime, atime).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), atime);
+        assert_eq!(
+            dir.stat_sync("../file").unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{PermissionsExt, symlink};
+            let link = temp.path().join("link");
+            symlink("file", &link).unwrap();
+            assert!(dir.lstat_sync("link").unwrap().is_symlink());
+            assert!(dir.stat_sync("link").unwrap().is_file());
+            dir.lutimes_sync("link", atime, mtime).unwrap();
+            assert_eq!(
+                std::fs::symlink_metadata(&link)
+                    .unwrap()
+                    .modified()
+                    .unwrap(),
+                mtime
+            );
+            dir.chmod_sync("file", 0o640).unwrap();
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o640
+            );
+            fs::fchmod_sync(&file, 0o600).unwrap();
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            let uid = unsafe { libc::geteuid() };
+            let gid = unsafe { libc::getegid() };
+            dir.chown_sync("file", uid, gid).unwrap();
+            dir.lchown_sync("link", uid, gid).unwrap();
+            fs::fchown_sync(&file, uid, gid).unwrap();
+            // Some Unix filesystems cannot change a symlink's permissions.
+            let _ = dir.lchmod_sync("link", 0o777);
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn async_metadata_operations_work() {
+        futures_lite::future::block_on(async {
+            let temp = tempdir().unwrap();
+            let dir = Directory::new(temp.path()).unwrap();
+            dir.write_text("file", "hi").unwrap();
+            assert_eq!(dir.stat("file").await.unwrap().len(), 2);
+            assert!(dir.lstat("file").await.unwrap().is_file());
+            assert!(dir.statfs("file").await.unwrap().blocks > 0.0);
+            let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+            dir.utimes("file", time, time).await.unwrap();
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink("file", temp.path().join("link")).unwrap();
+                dir.lutimes("link", time, time).await.unwrap();
+                dir.chmod("file", 0o600).await.unwrap();
+                let uid = unsafe { libc::geteuid() };
+                let gid = unsafe { libc::getegid() };
+                dir.chown("file", uid, gid).await.unwrap();
+                dir.lchown("link", uid, gid).await.unwrap();
+                let _ = dir.lchmod("link", 0o777).await;
+            }
+            let mut options = OpenOptions::new();
+            options.read(true);
+            let file = dir.open("file", &options).await.unwrap();
+            file.futimes(time, time).await.unwrap();
+            #[cfg(unix)]
+            {
+                file.fchmod(0o600).await.unwrap();
+                file.fchown(unsafe { libc::geteuid() }, unsafe { libc::getegid() })
+                    .await
+                    .unwrap();
+            }
+        });
+    }
+
+    #[test]
+    fn directory_apis_cover_creation_listing_removal_and_paths() {
+        let temp = tempdir().unwrap();
+        let dir = Directory::new(temp.path()).unwrap();
+        dir.mkdir_sync("nested/deep", true).unwrap();
+        assert_eq!(dir.readdir_sync("nested").unwrap(), vec!["deep"]);
+        assert_eq!(
+            dir.opendir_sync("nested").unwrap().collect::<Vec<_>>(),
+            vec!["deep"]
+        );
+        assert_eq!(
+            dir.realpath_sync("nested/deep").unwrap(),
+            temp.path().join("nested/deep").to_str().unwrap()
+        );
+        assert_eq!(
+            dir.glob_sync("nested/*").unwrap(),
+            vec![temp.path().join("nested/deep").to_str().unwrap()]
+        );
+        assert_eq!(
+            dir.mkdir_sync("nested", false).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        dir.rmdir_sync("nested/deep").unwrap();
+        dir.rm_sync("nested", true, false).unwrap();
+        dir.rm_sync("nested", false, true).unwrap();
+        assert_eq!(
+            dir.rm_sync("missing", false, false).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            dir.rm_sync("../outside", true, true).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(fs::normalize_path("/a/./b/../c").unwrap(), "/a/c");
+        assert_eq!(fs::glob_to_regex("*.txt").unwrap(), "^[^/]*\\.txt$");
+    }
+
+    #[test]
+    fn temporary_directories_are_unique_and_disposable() {
+        let temp = tempdir().unwrap();
+        let prefix = temp.path().join("example-");
+        let prefix = prefix.to_str().unwrap();
+        let first = fs::mkdtemp_sync(prefix).unwrap();
+        let second = fs::mkdtemp_sync(prefix).unwrap();
+        assert_ne!(first, second);
+        assert!(Path::new(&first).is_dir());
+        let disposable = fs::mkdtemp_disposable_sync(prefix).unwrap();
+        let disposable_path = disposable.path().to_owned();
+        assert!(Path::new(&disposable_path).is_dir());
+        drop(disposable);
+        assert!(!Path::new(&disposable_path).exists());
+    }
+
+    #[test]
+    fn async_directory_operations_work() {
+        futures_lite::future::block_on(async {
+            let temp = tempdir().unwrap();
+            let dir = Directory::new(temp.path()).unwrap();
+            dir.mkdir("nested", false).await.unwrap();
+            assert_eq!(dir.readdir(".").await.unwrap(), vec!["nested"]);
+            assert_eq!(
+                dir.opendir(".").await.unwrap().collect::<Vec<_>>(),
+                vec!["nested"]
+            );
+            assert_eq!(dir.glob("nest*").await.unwrap().len(), 1);
+            assert!(dir.realpath("nested").await.unwrap().ends_with("nested"));
+            let prefix = temp.path().join("tmp-");
+            let created = fs::mkdtemp(prefix.to_str().unwrap()).await.unwrap();
+            assert!(Path::new(&created).is_dir());
+            dir.rmdir("nested").await.unwrap();
+            fs::rm(&created, true, false).await.unwrap();
+        });
+    }
 
     #[test]
     fn directory_and_fs_share_file_operations() {
