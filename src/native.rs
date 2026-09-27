@@ -69,6 +69,10 @@ pub fn write_file(path: &str, contents: &[u8]) -> io::Result<()> {
     fs::write(path, contents)
 }
 
+pub fn copy_file(from: &str, to: &str) -> io::Result<()> {
+    fs::copy(from, to).map(|_| ())
+}
+
 pub fn create_dir(path: &str) -> io::Result<()> {
     fs::create_dir(path)
 }

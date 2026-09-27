@@ -105,6 +105,15 @@ pub fn write_file(path: &str, contents: &[u8]) -> Result<(), JsValue> {
     Ok(())
 }
 
+#[wasm_bindgen(js_name = copyFile)]
+pub fn copy_file(from: &str, to: &str) -> Result<(), JsValue> {
+    call_fs(
+        "copyFileSync",
+        &[JsValue::from_str(from), JsValue::from_str(to)],
+    )?;
+    Ok(())
+}
+
 #[wasm_bindgen(js_name = createDir)]
 pub fn create_dir(path: &str) -> Result<(), JsValue> {
     let options = mkdir_options(false)?;
@@ -199,6 +208,19 @@ mod tests {
 
         write_file(&path, &contents).unwrap();
         assert_eq!(read_file(&path).unwrap(), contents);
+    }
+
+    #[wasm_bindgen_test]
+    fn copy_file_copies_to_a_new_path() {
+        let directory = test_path("copy");
+        create_dir_all(&directory).unwrap();
+        let source = format!("{directory}/source.txt");
+        let destination = format!("{directory}/copy.txt");
+
+        write_text(&source, "copied content").unwrap();
+        copy_file(&source, &destination).unwrap();
+
+        assert_eq!(read_text(&destination).unwrap(), "copied content");
     }
 
     #[wasm_bindgen_test]

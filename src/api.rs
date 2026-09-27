@@ -169,6 +169,8 @@ define_file_api! {
     ///
     /// Creates a file if it does not exist, and entirely replaces its contents if it does.
     write_file([path], contents: &[u8]) -> ();
+    /// Copies a file to a new path, replacing the destination if it already exists.
+    copy_file([from, to]) -> ();
     /// Creates a new, empty directory at the provided path.
     create_dir([path]) -> ();
     /// Recursively create a directory and all of its parent components if they are missing.
@@ -253,6 +255,23 @@ mod tests {
     }
 
     #[test]
+    fn copy_file_is_available_on_fs_and_directory() {
+        let temp = tempdir().unwrap();
+        let dir = Directory::new(temp.path()).unwrap();
+        dir.write_text("source.txt", "from directory").unwrap();
+        dir.copy_file("source.txt", "copy.txt").unwrap();
+        assert_eq!(dir.read_text("copy.txt").unwrap(), "from directory");
+
+        let root_source = temp.path().join("copy.txt");
+        let root_copy = temp.path().join("root-copy.txt");
+        fs::copy_file(root_source.to_str().unwrap(), root_copy.to_str().unwrap()).unwrap();
+        assert_eq!(
+            fs::read_text(root_copy.to_str().unwrap()).unwrap(),
+            "from directory"
+        );
+    }
+
+    #[test]
     fn directory_rejects_paths_that_escape_its_root() {
         let temp = tempdir().unwrap();
         let dir = Directory::new(temp.path()).unwrap();
@@ -263,6 +282,12 @@ mod tests {
         );
         assert_eq!(
             dir.rename("inside.txt", "../outside.txt")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            dir.copy_file("inside.txt", "../outside.txt")
                 .unwrap_err()
                 .kind(),
             std::io::ErrorKind::InvalidInput
