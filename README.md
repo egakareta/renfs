@@ -22,6 +22,32 @@ For convenience, [std::fs](https://doc.rust-lang.org/std/fs/index.html) is used 
 
 Please read the [examples](https://github.com/egakareta/renfs/tree/master/examples) for guidance.
 
+### Install ZenFS
+
+RenFS has a CLI to automatically install a bundled version of ZenFS directly into a project:
+
+```sh
+cargo install renfs --locked # or cargo binstall renfs
+renfs dist/zenfs.js
+```
+
+Otherwise, you can always download it manually in this repository [here](https://github.com/egakareta/renfs/tree/master/vendor).
+
+### Configure imports
+
+In your HTML file:
+
+```html
+<script type="importmap">
+  {
+    "imports": {
+      "@zenfs/core": "./zenfs.js",
+      "@zenfs/dom": "./zenfs.js"
+    }
+  }
+</script>
+```
+
 ### Configure a browser filesystem
 
 For most use cases, configure ZenFS before Rust application initialization.
@@ -46,6 +72,31 @@ await configure({
 
 export default () => ({});
 ```
+
+## Q & A
+
+<details> <summary> <b>Why use RenFS?</b> </summary>
+
+Crates such as [opfs](github.com/anchpop/opfs), [rexie](https://github.com/devashishdxt/rexie),
+[idb](https://github.com/devashishdxt/idb) are locked into one browser API and call it a day.
+For a long time, this was the tradeoff developers had to make if they wanted to persist code in
+browsers.
+
+RenFS delegates to ZenFS, one of the most versatile and powerful filesystem solutions available
+in browsers.
+
+</details>
+
+<details> <summary> <b>Are write operations durable?</b> </summary>
+
+For synchronous APIs of some browser backends like IndexedDB and OPFS, **no**. If you write to
+a file, then immediately after refresh the browser window, there is no guarantee that the data
+has been saved.
+
+If you want durable operations, consider using asynchronous APIs such as `write_file` instead
+of `write_file_sync`.
+
+</details>
 
 ## License
 
