@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let count = count + 1;
 
-    app_dir.write_file(counter_file, count.to_string().as_bytes())?;
+    app_dir.write_file_sync(counter_file, count.to_string().as_bytes())?;
 
     examplify::log::info!("Runs: {}", count);
 
