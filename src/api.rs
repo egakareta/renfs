@@ -63,6 +63,97 @@ macro_rules! implementation_result {
     }};
 }
 
+macro_rules! define_resource_handle {
+    ($(#[$documentation:meta])* $name:ident($inner:ty) {
+        from_inner $visibility:vis,
+        drop $drop:expr;
+    }) => {
+        $(#[$documentation])*
+        pub struct $name {
+            inner: Option<$inner>,
+        }
+
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.debug_struct(stringify!($name)).finish_non_exhaustive()
+            }
+        }
+
+        impl $name {
+            $visibility fn from_inner(inner: $inner) -> Self {
+                Self { inner: Some(inner) }
+            }
+        }
+
+        impl Drop for $name {
+            fn drop(&mut self) {
+                if let Some(inner) = self.inner.take() {
+                    let _ = ($drop)(inner);
+                }
+            }
+        }
+    };
+}
+
+macro_rules! define_bool_accessors {
+    ($($(#[$documentation:meta])* $field:ident;)*) => {
+        $(
+            $(#[$documentation])*
+            pub fn $field(&self) -> bool {
+                self.$field
+            }
+        )*
+    };
+}
+
+macro_rules! define_bool_option_setters {
+    ($($(#[$documentation:meta])* $field:ident;)*) => {
+        $(
+            $(#[$documentation])*
+            pub fn $field(&mut self, $field: bool) -> &mut Self {
+                self.$field = $field;
+                self
+            }
+        )*
+    };
+}
+
+macro_rules! define_wasm_sync_wrappers {
+    ($($(#[$documentation:meta])* $name:ident($($argument:ident: $argument_type:ty),*) -> $output:ty = $implementation:ident;)*) => {
+        $(
+            #[cfg(target_arch = "wasm32")]
+            $(#[$documentation])*
+            pub fn $name($($argument: $argument_type),*) -> Result<$output> {
+                implementation_result!(implementation::$implementation($($argument),*))
+            }
+        )*
+    };
+}
+
+macro_rules! define_wasm_async_wrappers {
+    ($($(#[$documentation:meta])* $name:ident($($argument:ident: $argument_type:ty),*) -> $output:ty = $implementation:ident;)*) => {
+        $(
+            #[cfg(target_arch = "wasm32")]
+            $(#[$documentation])*
+            pub async fn $name($($argument: $argument_type),*) -> Result<$output> {
+                implementation_result!(implementation::$implementation($($argument),*).await)
+            }
+        )*
+    };
+}
+
+macro_rules! define_wasm_value_wrappers {
+    ($($(#[$documentation:meta])* $name:ident() -> $output:ty = $implementation:ident;)*) => {
+        $(
+            #[cfg(target_arch = "wasm32")]
+            $(#[$documentation])*
+            pub fn $name() -> $output {
+                implementation::$implementation()
+            }
+        )*
+    };
+}
+
 macro_rules! define_file_handle_api {
     ($( $(#[$documentation:meta])* $operation:ident => $sync_operation:ident
         ($($argument:ident: $argument_type:ty),*) -> $output:ty {
@@ -146,22 +237,15 @@ pub struct Directory {
     path: String,
 }
 
-/// An open directory handle. Read entries one at a time and close it when finished.
-pub struct Dir {
-    inner: Option<implementation::Dir>,
-}
-
-impl std::fmt::Debug for Dir {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Dir").finish_non_exhaustive()
+define_resource_handle! {
+    /// An open directory handle. Read entries one at a time and close it when finished.
+    Dir(implementation::Dir) {
+        from_inner pub(crate),
+        drop |inner| implementation::dir_close_sync(&inner);
     }
 }
 
 impl Dir {
-    pub(crate) fn from_inner(inner: implementation::Dir) -> Self {
-        Self { inner: Some(inner) }
-    }
-
     /// Reads the next directory entry, or `None` when the directory is exhausted.
     pub fn read_sync(&mut self) -> Result<Option<Dirent>> {
         let inner = self
@@ -228,44 +312,25 @@ impl Dirent {
     pub fn name(&self) -> &str {
         &self.name
     }
-    /// Returns whether this entry is a regular file.
-    pub fn is_file(&self) -> bool {
-        self.is_file
-    }
-    /// Returns whether this entry is a directory.
-    pub fn is_dir(&self) -> bool {
-        self.is_dir
-    }
-    /// Returns whether this entry is a symbolic link.
-    pub fn is_symlink(&self) -> bool {
-        self.is_symlink
+    define_bool_accessors! {
+        /// Returns whether this entry is a regular file.
+        is_file;
+        /// Returns whether this entry is a directory.
+        is_dir;
+        /// Returns whether this entry is a symbolic link.
+        is_symlink;
     }
 }
 
-impl Drop for Dir {
-    fn drop(&mut self) {
-        if let Some(inner) = self.inner.take() {
-            let _ = implementation::dir_close_sync(&inner);
-        }
-    }
-}
-
-/// A filesystem watcher returned by [`fs::watch`].
-pub struct Watcher {
-    inner: Option<implementation::Watcher>,
-}
-
-impl std::fmt::Debug for Watcher {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Watcher").finish_non_exhaustive()
+define_resource_handle! {
+    /// A filesystem watcher returned by [`fs::watch`].
+    Watcher(implementation::Watcher) {
+        from_inner,
+        drop |inner| implementation::watch_close(&inner);
     }
 }
 
 impl Watcher {
-    fn from_inner(inner: implementation::Watcher) -> Self {
-        Self { inner: Some(inner) }
-    }
-
     /// Stops watching for changes. Dropping the watcher also closes it.
     pub fn close(&mut self) -> Result<()> {
         let inner = self
@@ -275,14 +340,6 @@ impl Watcher {
         implementation::watch_close(inner).map_err(Error::from)?;
         self.inner.take();
         Ok(())
-    }
-}
-
-impl Drop for Watcher {
-    fn drop(&mut self) {
-        if let Some(inner) = self.inner.take() {
-            let _ = implementation::watch_close(&inner);
-        }
     }
 }
 
@@ -342,22 +399,15 @@ pub struct WriteStreamOptions {
     pub start: Option<u64>,
 }
 
-/// A readable byte stream. Dropping it destroys the stream.
-pub struct ReadStream {
-    inner: Option<implementation::ReadStream>,
-}
-
-impl std::fmt::Debug for ReadStream {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReadStream").finish_non_exhaustive()
+define_resource_handle! {
+    /// A readable byte stream. Dropping it destroys the stream.
+    ReadStream(implementation::ReadStream) {
+        from_inner,
+        drop |inner| implementation::read_stream_destroy(&inner);
     }
 }
 
 impl ReadStream {
-    fn from_inner(inner: implementation::ReadStream) -> Self {
-        Self { inner: Some(inner) }
-    }
-
     /// Reads the next chunk, or `None` at end of stream.
     pub async fn read(&mut self) -> Result<Option<Vec<u8>>> {
         let inner = self
@@ -379,30 +429,15 @@ impl ReadStream {
     }
 }
 
-impl Drop for ReadStream {
-    fn drop(&mut self) {
-        if let Some(inner) = self.inner.take() {
-            let _ = implementation::read_stream_destroy(&inner);
-        }
-    }
-}
-
-/// A writable byte stream. Call [`WriteStream::end`] to finish writing.
-pub struct WriteStream {
-    inner: Option<implementation::WriteStream>,
-}
-
-impl std::fmt::Debug for WriteStream {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WriteStream").finish_non_exhaustive()
+define_resource_handle! {
+    /// A writable byte stream. Call [`WriteStream::end`] to finish writing.
+    WriteStream(implementation::WriteStream) {
+        from_inner,
+        drop |inner| implementation::write_stream_destroy(&inner);
     }
 }
 
 impl WriteStream {
-    fn from_inner(inner: implementation::WriteStream) -> Self {
-        Self { inner: Some(inner) }
-    }
-
     /// Writes all bytes, waiting until the stream has handled the chunk.
     pub async fn write(&mut self, bytes: &[u8]) -> Result<()> {
         let inner = self
@@ -434,14 +469,6 @@ impl WriteStream {
         implementation::write_stream_destroy(inner).map_err(Error::from)?;
         self.inner.take();
         Ok(())
-    }
-}
-
-impl Drop for WriteStream {
-    fn drop(&mut self) {
-        if let Some(inner) = self.inner.take() {
-            let _ = implementation::write_stream_destroy(&inner);
-        }
     }
 }
 
@@ -676,95 +703,67 @@ impl OpenOptions {
         Self::default()
     }
 
-    /// Sets the option for read access.
-    ///
-    /// This option, when true, will indicate that the file should be
-    /// readable if opened.
-    pub fn read(&mut self, read: bool) -> &mut Self {
-        self.read = read;
-        self
-    }
-
-    /// Sets the option for write access.
-    ///
-    /// If the file already exists, any write calls on it will overwrite its
-    /// contents, without truncating it.
-    pub fn write(&mut self, write: bool) -> &mut Self {
-        self.write = write;
-        self
-    }
-
-    /// Sets the option for the append mode.
-    ///
-    /// This option, when true, means that writes will append to a file instead
-    /// of overwriting previous contents.
-    ///
-    /// Note
-    /// This function doesn’t create the file if it doesn’t exist. Use the
-    /// `OpenOptions::create` method to do so.
-    pub fn append(&mut self, append: bool) -> &mut Self {
-        self.append = append;
-        self
-    }
-
-    /// Sets the option for truncating a previous file.
-    ///
-    /// If a file is successfully opened with this option set to true, it will truncate
-    /// the file to 0 length if it already exists.
-    ///
-    /// The file must be opened with write access for truncate to work.
-    pub fn truncate(&mut self, truncate: bool) -> &mut Self {
-        self.truncate = truncate;
-        self
-    }
-
-    /// Sets the option to create a new file, or open it if it already exists.
-    ///
-    /// In order for the file to be created, `OpenOptions::write` or
-    /// `OpenOptions::append` access must be used.
-    ///
-    /// If `.create(true)` is set without `.write(true)` or `.append(true)`, calling open will
-    /// fail with an `InvalidInput` error.
-    pub fn create(&mut self, create: bool) -> &mut Self {
-        self.create = create;
-        self
-    }
-
-    /// Sets the option to create a new file, failing if it already exists.
-    ///
-    /// No file is allowed to exist at the target location, also no (dangling) symlink. In this
-    /// way, if the call succeeds, the file returned is guaranteed to be new.
-    ///
-    /// If `.create_new(true)` is set, `.create()` and `.truncate()` are ignored.
-    ///
-    /// The file must be opened with write or append access in order to create a new file.
-    pub fn create_new(&mut self, create_new: bool) -> &mut Self {
-        self.create_new = create_new;
-        self
+    define_bool_option_setters! {
+        /// Sets the option for read access.
+        ///
+        /// This option, when true, will indicate that the file should be
+        /// readable if opened.
+        read;
+        /// Sets the option for write access.
+        ///
+        /// If the file already exists, any write calls on it will overwrite its
+        /// contents, without truncating it.
+        write;
+        /// Sets the option for the append mode.
+        ///
+        /// This option, when true, means that writes will append to a file instead
+        /// of overwriting previous contents.
+        ///
+        /// Note
+        /// This function doesn’t create the file if it doesn’t exist. Use the
+        /// `OpenOptions::create` method to do so.
+        append;
+        /// Sets the option for truncating a previous file.
+        ///
+        /// If a file is successfully opened with this option set to true, it will truncate
+        /// the file to 0 length if it already exists.
+        ///
+        /// The file must be opened with write access for truncate to work.
+        truncate;
+        /// Sets the option to create a new file, or open it if it already exists.
+        ///
+        /// In order for the file to be created, `OpenOptions::write` or
+        /// `OpenOptions::append` access must be used.
+        ///
+        /// If `.create(true)` is set without `.write(true)` or `.append(true)`, calling open will
+        /// fail with an `InvalidInput` error.
+        create;
+        /// Sets the option to create a new file, failing if it already exists.
+        ///
+        /// No file is allowed to exist at the target location, also no (dangling) symlink. In this
+        /// way, if the call succeeds, the file returned is guaranteed to be new.
+        ///
+        /// If `.create_new(true)` is set, `.create()` and `.truncate()` are ignored.
+        ///
+        /// The file must be opened with write or append access in order to create a new file.
+        create_new;
     }
 }
 
-/// An object providing access to an open file on the filesystem.
-///
-/// Files are automatically closed when they go out of scope. Errors detected
-/// on closing are ignored by the implementation of `Drop`.
-///
-/// Use [`fs::close`] to close explicitly and observe close errors.
-pub struct File {
-    inner: Option<implementation::File>,
-}
-
-impl std::fmt::Debug for File {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("File").finish_non_exhaustive()
+define_resource_handle! {
+    /// An object providing access to an open file on the filesystem.
+    ///
+    /// Files are automatically closed when they go out of scope. Errors detected
+    /// on closing are ignored by the implementation of `Drop`.
+    ///
+    /// Use [`fs::close`] to close explicitly and observe close errors.
+    File(implementation::File) {
+        from_inner,
+        drop |inner| implementation::close_sync(inner);
     }
 }
 
 impl File {
-    fn from_inner(inner: implementation::File) -> Self {
-        Self { inner: Some(inner) }
-    }
-
     fn inner_mut(&mut self) -> Result<&mut implementation::File> {
         self.inner
             .as_mut()
@@ -840,14 +839,6 @@ impl File {
     }
 }
 
-impl Drop for File {
-    fn drop(&mut self) {
-        if let Some(inner) = self.inner.take() {
-            let _ = implementation::close_sync(inner);
-        }
-    }
-}
-
 /// Metadata about a filesystem entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Metadata {
@@ -894,19 +885,13 @@ impl Metadata {
         self.len == 0
     }
 
-    /// Returns `true` if this metadata is for a regular file.
-    pub fn is_file(&self) -> bool {
-        self.is_file
-    }
-
-    /// Returns `true` if this metadata is for a directory.
-    pub fn is_dir(&self) -> bool {
-        self.is_dir
-    }
-
-    /// Returns `true` if this metadata is for a symbolic link.
-    pub fn is_symlink(&self) -> bool {
-        self.is_symlink
+    define_bool_accessors! {
+        /// Returns `true` if this metadata is for a regular file.
+        is_file;
+        /// Returns `true` if this metadata is for a directory.
+        is_dir;
+        /// Returns `true` if this metadata is for a symbolic link.
+        is_symlink;
     }
 }
 
@@ -1122,151 +1107,55 @@ macro_rules! define_file_api {
                 implementation::create_write_stream(path, options).map(WriteStream::from_inner).map_err(Into::into)
             }
 
-            /// Configures ZenFS with the supplied configuration, including asynchronous backends.
-            #[cfg(target_arch = "wasm32")]
-            pub async fn configure(configuration: &JsValue) -> Result<()> {
-                implementation::configure(configuration).await?;
-                Ok(())
+            define_wasm_async_wrappers! {
+                /// Configures ZenFS with the supplied configuration, including asynchronous backends.
+                configure(configuration: &JsValue) -> () = configure;
+                /// Configures ZenFS with one backend mounted at `/`, including asynchronous backends.
+                configure_single(configuration: &JsValue) -> () = configure_single;
+                /// Resolves a backend configuration asynchronously into a filesystem instance.
+                resolve_mount_config(configuration: &JsValue) -> JsValue = resolve_mount_config;
+                /// Resolves a remote filesystem asynchronously using a channel and mount configuration.
+                resolve_remote_mount(channel: &JsValue, configuration: &JsValue) -> JsValue = resolve_remote_mount;
+                /// Flushes all mounted filesystems.
+                sync() -> () = sync;
+                /// Waits for a worker to come online.
+                wait_online(worker: &JsValue) -> () = wait_online;
             }
 
-            /// Configures ZenFS synchronously. This fails if a configured backend requires async setup.
-            #[cfg(target_arch = "wasm32")]
-            pub fn configure_sync(configuration: &JsValue) -> Result<()> {
-                implementation::configure_sync(configuration)?;
-                Ok(())
+            define_wasm_sync_wrappers! {
+                /// Configures ZenFS synchronously. This fails if a configured backend requires async setup.
+                configure_sync(configuration: &JsValue) -> () = configure_sync;
+                /// Configures ZenFS synchronously with one backend mounted at `/`.
+                configure_single_sync(configuration: &JsValue) -> () = configure_single_sync;
+                /// Applies shared configuration options to an already-created filesystem.
+                configure_file_system(filesystem: &JsValue, configuration: &JsValue) -> () = configure_file_system;
+                /// Resolves a backend configuration synchronously into a filesystem instance.
+                resolve_mount_config_sync(configuration: &JsValue) -> JsValue = resolve_mount_config_sync;
+                /// Mounts an existing filesystem at `mount_point`.
+                mount(mount_point: &str, filesystem: &JsValue) -> () = mount;
+                /// Unmounts the filesystem at `mount_point`.
+                umount(mount_point: &str) -> () = umount;
+                /// Attaches a filesystem to a channel or RPC port.
+                attach_fs(channel: &JsValue, filesystem: &JsValue) -> () = attach_fs;
+                /// Detaches a filesystem from a channel or RPC port.
+                detach_fs(channel: &JsValue, filesystem: &JsValue) -> () = detach_fs;
             }
 
-            /// Configures ZenFS with one backend mounted at `/`, including asynchronous backends.
-            #[cfg(target_arch = "wasm32")]
-            pub async fn configure_single(configuration: &JsValue) -> Result<()> {
-                implementation::configure_single(configuration).await?;
-                Ok(())
-            }
-
-            /// Configures ZenFS synchronously with one backend mounted at `/`.
-            #[cfg(target_arch = "wasm32")]
-            pub fn configure_single_sync(configuration: &JsValue) -> Result<()> {
-                implementation::configure_single_sync(configuration)?;
-                Ok(())
-            }
-
-            /// Applies shared configuration options to an already-created filesystem.
-            #[cfg(target_arch = "wasm32")]
-            pub fn configure_file_system(
-                filesystem: &JsValue,
-                configuration: &JsValue,
-            ) -> Result<()> {
-                implementation::configure_file_system(filesystem, configuration)?;
-                Ok(())
-            }
-
-            /// Resolves a backend configuration asynchronously into a filesystem instance.
-            #[cfg(target_arch = "wasm32")]
-            pub async fn resolve_mount_config(configuration: &JsValue) -> Result<JsValue> {
-                implementation::resolve_mount_config(configuration)
-                    .await
-                    .map_err(Into::into)
-            }
-
-            /// Resolves a backend configuration synchronously into a filesystem instance.
-            #[cfg(target_arch = "wasm32")]
-            pub fn resolve_mount_config_sync(configuration: &JsValue) -> Result<JsValue> {
-                implementation::resolve_mount_config_sync(configuration).map_err(Into::into)
-            }
-
-            /// Resolves a remote filesystem asynchronously using a channel and mount configuration.
-            #[cfg(target_arch = "wasm32")]
-            pub async fn resolve_remote_mount(
-                channel: &JsValue,
-                configuration: &JsValue,
-            ) -> Result<JsValue> {
-                implementation::resolve_remote_mount(channel, configuration)
-                    .await
-                    .map_err(Into::into)
-            }
-
-            /// Mounts an existing filesystem at `mount_point`.
-            #[cfg(target_arch = "wasm32")]
-            pub fn mount(mount_point: &str, filesystem: &JsValue) -> Result<()> {
-                implementation::mount(mount_point, filesystem)?;
-                Ok(())
-            }
-
-            /// Unmounts the filesystem at `mount_point`.
-            #[cfg(target_arch = "wasm32")]
-            pub fn umount(mount_point: &str) -> Result<()> {
-                implementation::umount(mount_point)?;
-                Ok(())
-            }
-
-            /// Returns ZenFS's map of mount points to filesystem instances.
-            #[cfg(target_arch = "wasm32")]
-            pub fn mounts() -> JsValue {
-                implementation::mounts()
-            }
-
-            /// Flushes all mounted filesystems.
-            #[cfg(target_arch = "wasm32")]
-            pub async fn sync() -> Result<()> {
-                implementation::sync().await?;
-                Ok(())
-            }
-
-            /// Waits for a worker to come online.
-            #[cfg(target_arch = "wasm32")]
-            pub async fn wait_online(worker: &JsValue) -> Result<()> {
-                implementation::wait_online(worker).await?;
-                Ok(())
-            }
-
-            /// Attaches a filesystem to a channel or RPC port.
-            #[cfg(target_arch = "wasm32")]
-            pub fn attach_fs(channel: &JsValue, filesystem: &JsValue) -> Result<()> {
-                implementation::attach_fs(channel, filesystem)?;
-                Ok(())
-            }
-
-            /// Detaches a filesystem from a channel or RPC port.
-            #[cfg(target_arch = "wasm32")]
-            pub fn detach_fs(channel: &JsValue, filesystem: &JsValue) -> Result<()> {
-                implementation::detach_fs(channel, filesystem)?;
-                Ok(())
-            }
-
-            /// Returns ZenFS's `fs` object.
-            #[cfg(target_arch = "wasm32")]
-            pub fn core_fs() -> JsValue {
-                implementation::zenfs_fs()
-            }
-
-            /// Returns ZenFS's promise-based filesystem API.
-            #[cfg(target_arch = "wasm32")]
-            pub fn promises() -> JsValue {
-                implementation::promises()
-            }
-
-            /// Returns ZenFS's default filesystem object.
-            #[cfg(target_arch = "wasm32")]
-            pub fn default_fs() -> JsValue {
-                implementation::default_fs()
-            }
-
-            /// Returns ZenFS's virtual filesystem module.
-            #[cfg(target_arch = "wasm32")]
-            pub fn vfs() -> JsValue {
-                implementation::vfs()
-            }
-
-            /// Returns the ZenFS version value exported by `@zenfs/core`.
-            #[cfg(target_arch = "wasm32")]
-            pub fn version() -> JsValue {
-                implementation::version()
-            }
-
-            /// Returns ZenFS's filesystem constants object.
-            #[cfg(target_arch = "wasm32")]
-            pub fn constants() -> JsValue {
-                implementation::constants()
+            define_wasm_value_wrappers! {
+                /// Returns ZenFS's map of mount points to filesystem instances.
+                mounts() -> JsValue = mounts;
+                /// Returns ZenFS's `fs` object.
+                core_fs() -> JsValue = zenfs_fs;
+                /// Returns ZenFS's promise-based filesystem API.
+                promises() -> JsValue = promises;
+                /// Returns ZenFS's default filesystem object.
+                default_fs() -> JsValue = default_fs;
+                /// Returns ZenFS's virtual filesystem module.
+                vfs() -> JsValue = vfs;
+                /// Returns the ZenFS version value exported by `@zenfs/core`.
+                version() -> JsValue = version;
+                /// Returns ZenFS's filesystem constants object.
+                constants() -> JsValue = constants;
             }
 
             /// Converts a glob pattern into a regular expression source.
