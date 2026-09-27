@@ -131,50 +131,8 @@ mod tests {
             io::ErrorKind::InvalidInput
         );
     }
-
-    #[test]
-    fn filesystem_operations_use_the_native_filesystem() {
-        let temp = tempdir().unwrap();
-        let nested_dir = temp.path().join("nested").join("directory");
-        let nested_path = nested_dir.to_str().unwrap();
-        let file = nested_dir.join("hello.txt");
-        let file_path = file.to_str().unwrap();
-
-        assert!(!exists(file_path).unwrap());
-        create_dir_all(nested_path).unwrap();
-        write_text(file_path, "hello from std::fs").unwrap();
-        assert!(exists(file_path).unwrap());
-        assert_eq!(read_text(file_path).unwrap(), "hello from std::fs");
-        assert_eq!(read_file(file_path).unwrap(), b"hello from std::fs");
-
-        write_file(file_path, b"bytes").unwrap();
-        assert_eq!(read_file(file_path).unwrap(), b"bytes");
-        assert!(
-            read_dir(nested_path)
-                .unwrap()
-                .contains(&"hello.txt".to_owned())
-        );
-
-        let renamed_file = nested_dir.join("renamed.txt");
-        let renamed_path = renamed_file.to_str().unwrap();
-        rename(file_path, renamed_path).unwrap();
-        assert!(!exists(file_path).unwrap());
-        assert_eq!(read_text(renamed_path).unwrap(), "bytes");
-
-        remove_file(renamed_path).unwrap();
-        assert!(!exists(renamed_path).unwrap());
-    }
-
-    #[test]
-    fn create_dir_requires_existing_parent_and_rejects_existing_path() {
-        let temp = tempdir().unwrap();
-        let missing_parent = temp.path().join("missing").join("child");
-        assert!(create_dir(missing_parent.to_str().unwrap()).is_err());
-
-        let child = temp.path().join("child");
-
-        create_dir(child.to_str().unwrap()).unwrap();
-        assert!(child.is_dir());
-        assert!(create_dir(child.to_str().unwrap()).is_err());
-    }
 }
+
+#[cfg(test)]
+#[path = "implementation_tests.rs"]
+mod shared_tests;

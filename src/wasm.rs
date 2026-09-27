@@ -183,77 +183,6 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn text_file_operations_round_trip_and_remove_files() {
-        let directory = test_path("text");
-        create_dir_all(&directory).unwrap();
-        let path = format!("{directory}/message.txt");
-
-        write_text(&path, "hello").unwrap();
-        assert!(exists(&path).unwrap());
-        assert_eq!(read_text(&path).unwrap(), "hello");
-
-        append_text(&path, " world").unwrap();
-        assert_eq!(read_text(&path).unwrap(), "hello world");
-
-        remove_file(&path).unwrap();
-        assert!(!exists(&path).unwrap());
-    }
-
-    #[wasm_bindgen_test]
-    fn binary_file_operations_preserve_all_byte_values() {
-        let directory = test_path("binary");
-        create_dir_all(&directory).unwrap();
-        let path = format!("{directory}/bytes.bin");
-        let contents = [0, 1, 127, 128, 255];
-
-        write_file(&path, &contents).unwrap();
-        assert_eq!(read_file(&path).unwrap(), contents);
-    }
-
-    #[wasm_bindgen_test]
-    fn copy_file_copies_to_a_new_path() {
-        let directory = test_path("copy");
-        create_dir_all(&directory).unwrap();
-        let source = format!("{directory}/source.txt");
-        let destination = format!("{directory}/copy.txt");
-
-        write_text(&source, "copied content").unwrap();
-        copy_file(&source, &destination).unwrap();
-
-        assert_eq!(read_text(&destination).unwrap(), "copied content");
-    }
-
-    #[wasm_bindgen_test]
-    fn rename_moves_files() {
-        let directory = test_path("rename");
-        create_dir_all(&directory).unwrap();
-        let source = format!("{directory}/source.txt");
-        let destination = format!("{directory}/destination.txt");
-
-        write_text(&source, "renamed content").unwrap();
-        rename(&source, &destination).unwrap();
-
-        assert!(!exists(&source).unwrap());
-        assert_eq!(read_text(&destination).unwrap(), "renamed content");
-    }
-
-    #[wasm_bindgen_test]
-    fn directory_operations_create_and_list_entries() {
-        let directory = test_path("directories");
-
-        let missing_parent_child = format!("{directory}/missing/child");
-        assert!(create_dir(&missing_parent_child).is_err());
-
-        create_dir_all(&directory).unwrap();
-        create_dir(&format!("{directory}/child")).unwrap();
-        create_dir_all(&format!("{directory}/nested/grandchild")).unwrap();
-
-        let entries = read_dir(&directory).unwrap();
-        assert!(entries.contains(&"child".to_owned()));
-        assert!(entries.contains(&"nested".to_owned()));
-    }
-
-    #[wasm_bindgen_test]
     fn javascript_exceptions_are_returned_as_errors() {
         let missing = format!("{}/missing.txt", test_path("missing"));
         let error = read_text(&missing).unwrap_err();
@@ -264,3 +193,7 @@ mod tests {
         assert!(message.contains(&missing));
     }
 }
+
+#[cfg(test)]
+#[path = "implementation_tests.rs"]
+mod shared_tests;
