@@ -11,9 +11,10 @@ use futures_lite::{
     stream::StreamExt,
 };
 
-use super::api::{Dir, Metadata, OpenOptions, StatFs, TempDir};
+use super::api::{Dirent, Metadata, OpenOptions, StatFs, TempDir};
 
 pub type File = async_fs::File;
+pub type Dir = async_fs::ReadDir;
 
 pub fn invalid_path_error(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.to_owned())
@@ -705,11 +706,48 @@ pub async fn readdir(path: &str) -> io::Result<Vec<String>> {
     Ok(names)
 }
 
-pub fn opendir_sync(path: &str) -> io::Result<Dir> {
-    readdir_sync(path).map(Dir::from_names)
+pub fn opendir_sync(path: &str) -> io::Result<super::api::Dir> {
+    block_on(async_fs::read_dir(path)).map(super::api::Dir::from_inner)
 }
-pub async fn opendir(path: &str) -> io::Result<Dir> {
-    readdir(path).await.map(Dir::from_names)
+pub async fn opendir(path: &str) -> io::Result<super::api::Dir> {
+    async_fs::read_dir(path)
+        .await
+        .map(super::api::Dir::from_inner)
+}
+
+async fn dirent(entry: async_fs::DirEntry) -> io::Result<Dirent> {
+    let name = entry.file_name().into_string().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "directory entry name is not valid UTF-8",
+        )
+    })?;
+    let kind = entry.file_type().await?;
+    Ok(Dirent::from_parts(
+        name,
+        kind.is_file(),
+        kind.is_dir(),
+        kind.is_symlink(),
+    ))
+}
+
+pub fn dir_read_sync(dir: &mut Dir) -> io::Result<Option<Dirent>> {
+    block_on(dir_read(dir))
+}
+
+pub async fn dir_read(dir: &mut Dir) -> io::Result<Option<Dirent>> {
+    match dir.next().await.transpose()? {
+        Some(entry) => dirent(entry).await.map(Some),
+        None => Ok(None),
+    }
+}
+
+pub fn dir_close_sync(_dir: &Dir) -> io::Result<()> {
+    Ok(())
+}
+
+pub async fn dir_close(_dir: &Dir) -> io::Result<()> {
+    Ok(())
 }
 
 pub fn rmdir_sync(path: &str) -> io::Result<()> {
@@ -775,7 +813,14 @@ pub async fn realpath(path: &str) -> io::Result<String> {
 pub fn glob_sync(pattern: &str) -> io::Result<Vec<String>> {
     glob::glob(pattern)
         .map_err(|error| invalid_path_error(&error.to_string()))?
-        .map(|entry| path_string(entry.map_err(|error| io::Error::other(error))?))
+        .map(|entry| {
+            let path = path_string(entry.map_err(io::Error::other)?)?;
+            Ok(if Path::new(pattern).is_absolute() {
+                path.trim_start_matches('/').to_owned()
+            } else {
+                path
+            })
+        })
         .collect()
 }
 
@@ -855,8 +900,67 @@ pub fn remove_file(path: &str) -> io::Result<()> {
     fs::remove_file(path)
 }
 
-pub fn rename(from: &str, to: &str) -> io::Result<()> {
+pub fn rename_sync(from: &str, to: &str) -> io::Result<()> {
     fs::rename(from, to)
+}
+
+pub async fn rename(from: &str, to: &str) -> io::Result<()> {
+    async_fs::rename(from, to).await
+}
+
+pub fn link_sync(original: &str, link: &str) -> io::Result<()> {
+    fs::hard_link(original, link)
+}
+
+pub async fn link(original: &str, link: &str) -> io::Result<()> {
+    async_fs::hard_link(original, link).await
+}
+
+pub fn symlink_sync(target: &str, link: &str) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(windows)]
+    {
+        let target_at_link = Path::new(link)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(target);
+        if fs::metadata(target_at_link).is_ok_and(|metadata| metadata.is_dir()) {
+            std::os::windows::fs::symlink_dir(target, link)
+        } else {
+            std::os::windows::fs::symlink_file(target, link)
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, link);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "symlinks are unsupported on this platform",
+        ))
+    }
+}
+
+pub async fn symlink(target: &str, link: &str) -> io::Result<()> {
+    symlink_sync(target, link)
+}
+
+pub fn readlink_sync(path: &str) -> io::Result<String> {
+    path_string(fs::read_link(path)?)
+}
+
+pub async fn readlink(path: &str) -> io::Result<String> {
+    path_string(async_fs::read_link(path).await?)
+}
+
+pub fn unlink_sync(path: &str) -> io::Result<()> {
+    fs::remove_file(path)
+}
+
+pub async fn unlink(path: &str) -> io::Result<()> {
+    async_fs::remove_file(path).await
 }
 
 #[cfg(test)]

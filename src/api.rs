@@ -146,24 +146,106 @@ pub struct Directory {
     path: String,
 }
 
-/// An opened directory, yielding its entries one at a time.
-#[derive(Debug)]
+/// An open directory handle. Read entries one at a time and close it when finished.
 pub struct Dir {
-    entries: std::vec::IntoIter<String>,
+    inner: Option<implementation::Dir>,
 }
 
-impl Iterator for Dir {
-    type Item = String;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.entries.next()
+impl std::fmt::Debug for Dir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Dir").finish_non_exhaustive()
     }
 }
 
 impl Dir {
-    pub(crate) fn from_names(names: Vec<String>) -> Self {
+    pub(crate) fn from_inner(inner: implementation::Dir) -> Self {
+        Self { inner: Some(inner) }
+    }
+
+    /// Reads the next directory entry, or `None` when the directory is exhausted.
+    pub fn read_sync(&mut self) -> Result<Option<Dirent>> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| invalid_path_error("directory is closed"))?;
+        implementation_result!(implementation::dir_read_sync(inner))
+    }
+
+    /// Reads the next directory entry, or `None` when the directory is exhausted.
+    pub async fn read(&mut self) -> Result<Option<Dirent>> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| invalid_path_error("directory is closed"))?;
+        implementation_result!(implementation::dir_read(inner).await)
+    }
+
+    /// Closes the directory.
+    pub fn close_sync(&mut self) -> Result<()> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| invalid_path_error("directory is closed"))?;
+        implementation::dir_close_sync(inner).map_err(Error::from)?;
+        self.inner.take();
+        Ok(())
+    }
+
+    /// Closes the directory.
+    pub async fn close(&mut self) -> Result<()> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| invalid_path_error("directory is closed"))?;
+        implementation::dir_close(inner)
+            .await
+            .map_err(Error::from)?;
+        self.inner.take();
+        Ok(())
+    }
+}
+
+/// A directory entry returned by [`Dir::read`] or [`Dir::read_sync`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Dirent {
+    name: String,
+    is_file: bool,
+    is_dir: bool,
+    is_symlink: bool,
+}
+
+impl Dirent {
+    pub(crate) fn from_parts(name: String, is_file: bool, is_dir: bool, is_symlink: bool) -> Self {
         Self {
-            entries: names.into_iter(),
+            name,
+            is_file,
+            is_dir,
+            is_symlink,
+        }
+    }
+
+    /// Returns the name of this entry.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Returns whether this entry is a regular file.
+    pub fn is_file(&self) -> bool {
+        self.is_file
+    }
+    /// Returns whether this entry is a directory.
+    pub fn is_dir(&self) -> bool {
+        self.is_dir
+    }
+    /// Returns whether this entry is a symbolic link.
+    pub fn is_symlink(&self) -> bool {
+        self.is_symlink
+    }
+}
+
+impl Drop for Dir {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            let _ = implementation::dir_close_sync(&inner);
         }
     }
 }
@@ -233,6 +315,60 @@ impl Directory {
         path.to_str()
             .map(str::to_owned)
             .ok_or_else(|| invalid_path_error("resolved path is not valid UTF-8"))
+    }
+
+    // The target is stored as given, relative to the link's parent. Reject
+    // paths that would lexically escape this directory's root.
+    fn symlink_paths(&self, target: &str, link: &str) -> Result<(String, String)> {
+        let link = self.resolve(link)?;
+        let relative_link = Path::new(link.as_str());
+        let root = Path::new(&self.path);
+        let mut depth = relative_link
+            .strip_prefix(root)
+            .map_err(|_| invalid_path_error("link is outside the directory"))?
+            .parent()
+            .map_or(0, |parent| {
+                parent
+                    .components()
+                    .filter(|c| matches!(c, Component::Normal(_)))
+                    .count()
+            });
+        if target.contains('\\') || Path::new(target).is_absolute() {
+            return Err(invalid_path_error(
+                "symbolic link target must stay inside the directory",
+            ));
+        }
+        for component in Path::new(target).components() {
+            match component {
+                Component::Normal(_) => depth += 1,
+                Component::ParentDir if depth > 0 => depth -= 1,
+                Component::CurDir => (),
+                _ => {
+                    return Err(invalid_path_error(
+                        "symbolic link target must stay inside the directory",
+                    ));
+                }
+            }
+        }
+        Ok((target.to_owned(), link))
+    }
+
+    /// Creates a new symbolic link on the filesystem.
+    ///
+    /// `link` is relative to this directory's root. `target` is stored verbatim
+    /// and interpreted relative to the link's parent, as with ZenFS.
+    pub fn symlink_sync(&self, target: &str, link: &str) -> Result<()> {
+        let (target, link) = self.symlink_paths(target, link)?;
+        implementation_result!(implementation::symlink_sync(&target, &link))
+    }
+
+    /// Creates a new symbolic link on the filesystem.
+    ///
+    /// `link` is relative to this directory's root; `target` is relative to
+    /// the link's parent and must stay inside this directory.
+    pub async fn symlink(&self, target: &str, link: &str) -> Result<()> {
+        let (target, link) = self.symlink_paths(target, link)?;
+        implementation_result!(implementation::symlink(&target, &link).await)
     }
 }
 
@@ -820,6 +956,16 @@ macro_rules! define_file_api {
                 super::open_as_blob_path(path).await
             }
 
+            /// Creates a new symbolic link on the filesystem.
+            pub async fn symlink(target: &str, link: &str) -> Result<()> {
+                implementation_result!(implementation::symlink(target, link).await)
+            }
+
+            /// Creates a new symbolic link on the filesystem.
+            pub fn symlink_sync(target: &str, link: &str) -> Result<()> {
+                implementation_result!(implementation::symlink_sync(target, link))
+            }
+
             $(
                 $(#[$documentation])*
                 pub fn $operation($($path: &str),* $(, $arg: $arg_type)*) -> Result<$output> {
@@ -933,8 +1079,6 @@ define_file_api! {
     mkdtemp_disposable_sync([prefix]) -> TempDir;
     /// Removes a file from the filesystem.
     remove_file([path]) -> ();
-    /// Renames a file or directory to a new name, replacing the original file if `to` already exists.
-    rename([from, to]) -> ();
   }
   async_operations {
     /// Checks whether a path can be accessed with the requested mode.
@@ -965,6 +1109,8 @@ define_file_api! {
     copy_file([from, to]) -> () => copy_file_sync;
     /// Recursively copies a file or directory to a new path.
     cp([from, to]) -> () => cp_sync;
+    /// Renames a file or directory to a new name, replacing the original file if `to` already exists.
+    rename([from, to]) -> () => rename_sync;
     /// Creates a directory, creating missing parent directories when `recursive` is true.
     mkdir([path], recursive: bool) -> () => mkdir_sync;
     /// Creates a uniquely named temporary directory by appending to `prefix`.
@@ -981,6 +1127,8 @@ define_file_api! {
     /// components normalized and symbolic links resolved.
     realpath([path]) -> String => realpath_sync;
     /// Returns paths matching a glob pattern.
+    ///
+    /// Like ZenFS, matches for absolute patterns omit the leading slash.
     glob([path]) -> Vec<String> => glob_sync;
     /// Given a path, queries the file system to get information about a file, directory, etc.
     stat([path]) -> Metadata => stat_sync;
@@ -1000,6 +1148,12 @@ define_file_api! {
     utimes([path], atime: std::time::SystemTime, mtime: std::time::SystemTime) -> () => utimes_sync;
     /// Changes the access and modification times of a symbolic link itself.
     lutimes([path], atime: std::time::SystemTime, mtime: std::time::SystemTime) -> () => lutimes_sync;
+    /// Creates a new hard link on the filesystem.
+    link([original, link]) -> () => link_sync;
+    /// Reads a symbolic link, returning the file that the link points to.
+    readlink([path]) -> String => readlink_sync;
+    /// Removes a file from the filesystem.
+    unlink([path]) -> () => unlink_sync;
     /// Truncates a file to the specified length.
     truncate([path], len: u64) -> () => truncate_sync;
   }
@@ -1051,6 +1205,85 @@ pub fn app_dir(name: &str) -> Result<Directory> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn hard_links_rename_and_unlink_work_on_fs_and_directory() {
+        let temp = tempdir().unwrap();
+        let dir = Directory::new(temp.path()).unwrap();
+        dir.write_text("source", "original").unwrap();
+        dir.link_sync("source", "hard").unwrap();
+        dir.write_text("hard", "updated").unwrap();
+        assert_eq!(dir.read_text("source").unwrap(), "updated");
+        dir.rename_sync("hard", "moved").unwrap();
+        dir.unlink_sync("source").unwrap();
+        assert_eq!(dir.read_text("moved").unwrap(), "updated");
+        dir.unlink_sync("moved").unwrap();
+        assert_eq!(
+            dir.unlink_sync("moved").unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            dir.link_sync("../outside", "bad").unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+
+        let original = temp.path().join("original");
+        let copy = temp.path().join("copy");
+        fs::write_text(original.to_str().unwrap(), "data").unwrap();
+        fs::link_sync(original.to_str().unwrap(), copy.to_str().unwrap()).unwrap();
+        fs::unlink_sync(original.to_str().unwrap()).unwrap();
+        assert_eq!(fs::read_text(copy.to_str().unwrap()).unwrap(), "data");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_keep_relative_targets_and_unlink_does_not_remove_them() {
+        let temp = tempdir().unwrap();
+        let dir = Directory::new(temp.path()).unwrap();
+        dir.create_dir("nested").unwrap();
+        dir.write_text("source", "contents").unwrap();
+        dir.symlink_sync("../source", "nested/link").unwrap();
+        assert_eq!(dir.readlink_sync("nested/link").unwrap(), "../source");
+        assert_eq!(dir.read_text("nested/link").unwrap(), "contents");
+        dir.unlink_sync("nested/link").unwrap();
+        assert_eq!(dir.read_text("source").unwrap(), "contents");
+        dir.symlink_sync("../missing", "nested/dangling").unwrap();
+        assert_eq!(dir.readlink_sync("nested/dangling").unwrap(), "../missing");
+        assert_eq!(
+            dir.symlink_sync("../../outside", "nested/escape")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            dir.symlink_sync("source", "../outside").unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+
+        let path = temp.path().join("raw-link");
+        fs::symlink_sync("source", path.to_str().unwrap()).unwrap();
+        assert_eq!(fs::readlink_sync(path.to_str().unwrap()).unwrap(), "source");
+    }
+
+    #[test]
+    fn async_link_operations_work() {
+        futures_lite::future::block_on(async {
+            let temp = tempdir().unwrap();
+            let dir = Directory::new(temp.path()).unwrap();
+            dir.write_text("source", "value").unwrap();
+            dir.link("source", "hard").await.unwrap();
+            dir.rename("hard", "renamed").await.unwrap();
+            dir.unlink("source").await.unwrap();
+            assert_eq!(dir.read_text("renamed").unwrap(), "value");
+            #[cfg(unix)]
+            {
+                dir.symlink("renamed", "symbolic").await.unwrap();
+                assert_eq!(dir.readlink("symbolic").await.unwrap(), "renamed");
+                dir.unlink("symbolic").await.unwrap();
+            }
+            dir.unlink("renamed").await.unwrap();
+        });
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1158,17 +1391,26 @@ mod tests {
         let dir = Directory::new(temp.path()).unwrap();
         dir.mkdir_sync("nested/deep", true).unwrap();
         assert_eq!(dir.readdir_sync("nested").unwrap(), vec!["deep"]);
-        assert_eq!(
-            dir.opendir_sync("nested").unwrap().collect::<Vec<_>>(),
-            vec!["deep"]
-        );
+        let mut opened = dir.opendir_sync("nested").unwrap();
+        let entry = opened.read_sync().unwrap().unwrap();
+        assert_eq!(entry.name(), "deep");
+        assert!(entry.is_dir());
+        assert_eq!(opened.read_sync().unwrap(), None);
+        opened.close_sync().unwrap();
+        assert!(opened.read_sync().is_err());
         assert_eq!(
             dir.realpath_sync("nested/deep").unwrap(),
             temp.path().join("nested/deep").to_str().unwrap()
         );
         assert_eq!(
             dir.glob_sync("nested/*").unwrap(),
-            vec![temp.path().join("nested/deep").to_str().unwrap()]
+            vec![
+                temp.path()
+                    .join("nested/deep")
+                    .to_str()
+                    .unwrap()
+                    .trim_start_matches('/')
+            ]
         );
         assert_eq!(
             dir.mkdir_sync("nested", false).unwrap_err().kind(),
@@ -1212,10 +1454,12 @@ mod tests {
             let dir = Directory::new(temp.path()).unwrap();
             dir.mkdir("nested", false).await.unwrap();
             assert_eq!(dir.readdir(".").await.unwrap(), vec!["nested"]);
-            assert_eq!(
-                dir.opendir(".").await.unwrap().collect::<Vec<_>>(),
-                vec!["nested"]
-            );
+            let mut opened = dir.opendir(".").await.unwrap();
+            let entry = opened.read().await.unwrap().unwrap();
+            assert_eq!(entry.name(), "nested");
+            assert!(entry.is_dir());
+            assert_eq!(opened.read().await.unwrap(), None);
+            opened.close().await.unwrap();
             assert_eq!(dir.glob("nest*").await.unwrap().len(), 1);
             assert!(dir.realpath("nested").await.unwrap().ends_with("nested"));
             let prefix = temp.path().join("tmp-");
@@ -1258,13 +1502,13 @@ mod tests {
         let temp = tempdir().unwrap();
         let dir = Directory::new(temp.path()).unwrap();
         dir.write_text("before.txt", "from directory").unwrap();
-        dir.rename("before.txt", "after.txt").unwrap();
+        dir.rename_sync("before.txt", "after.txt").unwrap();
         assert!(!dir.exists_sync("before.txt").unwrap());
         assert_eq!(dir.read_text("after.txt").unwrap(), "from directory");
 
         let root_before = temp.path().join("after.txt");
         let root_after = temp.path().join("root-renamed.txt");
-        fs::rename(root_before.to_str().unwrap(), root_after.to_str().unwrap()).unwrap();
+        fs::rename_sync(root_before.to_str().unwrap(), root_after.to_str().unwrap()).unwrap();
         assert!(!root_before.exists());
         assert!(root_after.exists());
     }
@@ -1296,7 +1540,7 @@ mod tests {
             std::io::ErrorKind::InvalidInput
         );
         assert_eq!(
-            dir.rename("inside.txt", "../outside.txt")
+            dir.rename_sync("inside.txt", "../outside.txt")
                 .unwrap_err()
                 .kind(),
             std::io::ErrorKind::InvalidInput
