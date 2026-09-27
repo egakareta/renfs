@@ -6,7 +6,7 @@ example = "simple"
 [[hooks]]
 stage = "pre_build"
 command = "renfs"
-command_arguments = ["examples/bin/zenfs.js", "--module", "dom"]
+command_arguments = ["examples/bin/zenfs.js"]
 
 [watch]
 ignore = ["examples/bin"]

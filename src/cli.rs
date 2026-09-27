@@ -27,8 +27,8 @@ struct Cli {
     #[arg(value_name = "OUTPUT_PATH")]
     output_path: PathBuf,
 
-    /// Additional @zenfs modules to bundle (e.g. dom, archives).
-    /// Use name@version to select a module version.
+    /// @zenfs modules to bundle (defaults to dom when none are specified).
+    /// Use name@version to select a module version, or none for core only.
     #[arg(long = "module", value_name = "MODULE")]
     modules: Vec<String>,
 
@@ -104,11 +104,7 @@ fn bundle(args: Cli) -> Result<()> {
         .with_context(|| format!("could not resolve output directory {}", parent.display()))?;
     let file_name = output_path.file_name().context("invalid output path")?;
     let output_file = parent.join(file_name);
-    let mut modules = args
-        .modules
-        .iter()
-        .map(|module| normalize_module(module))
-        .collect::<Result<Vec<_>>>()?;
+    let mut modules = requested_modules(&args.modules)?;
     let mut requested_modules = HashSet::from(["@zenfs/core".to_owned()]);
     for module in &modules {
         ensure!(
@@ -209,6 +205,24 @@ struct ZenFsModule {
     package: String,
     namespace: String,
     version: String,
+}
+
+fn requested_modules(requested: &[String]) -> Result<Vec<ZenFsModule>> {
+    if requested.iter().any(|module| module == "none") {
+        ensure!(
+            requested.len() == 1,
+            "--module none cannot be combined with other modules"
+        );
+        return Ok(Vec::new());
+    }
+    let mut modules = requested
+        .iter()
+        .map(|module| normalize_module(module))
+        .collect::<Result<Vec<_>>>()?;
+    if modules.is_empty() {
+        modules.push(normalize_module("dom")?);
+    }
+    Ok(modules)
 }
 
 struct BundleTarget {
@@ -1033,6 +1047,34 @@ mod tests {
         assert_eq!(args.output_path, PathBuf::from("custom/path/bundle.js"));
         assert_eq!(args.modules, vec!["dom@2.7.6"]);
         assert_eq!(args.zenfs_version, "2.7.6");
+    }
+
+    #[test]
+    fn cli_defaults_to_dom_without_requiring_a_module_flag() {
+        let args = Cli::try_parse_from(["renfs", "bundle.js"]).unwrap();
+        assert!(args.modules.is_empty());
+        let modules = requested_modules(&args.modules).unwrap();
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].package, "@zenfs/dom");
+    }
+
+    #[test]
+    fn explicit_modules_replace_default_dom() {
+        let modules = requested_modules(&["archives".to_owned()]).unwrap();
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].package, "@zenfs/archives");
+
+        let modules = requested_modules(&["@zenfs/dom@1.2.14".to_owned()]).unwrap();
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].version, "1.2.14");
+    }
+
+    #[test]
+    fn none_selects_core_only_and_cannot_be_combined_with_modules() {
+        let args = Cli::try_parse_from(["renfs", "bundle.js", "--module", "none"]).unwrap();
+        assert!(requested_modules(&args.modules).unwrap().is_empty());
+        assert!(requested_modules(&["none".to_owned(), "archives".to_owned()]).is_err());
+        assert!(requested_modules(&["none".to_owned(), "none".to_owned()]).is_err());
     }
 
     #[test]
