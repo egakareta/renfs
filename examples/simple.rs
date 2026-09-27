@@ -1,6 +1,6 @@
-//! If you cloned the repo, you can run this with:
-//! - `cargo run --example simple` (native)
-//! - `trunk serve --example simple` (web)
+//! Run this in
+//! - native `cargo run --example simple`
+//! - web `trunk serve --example simple`
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     examplify::init().with_log_level(examplify::log::LevelFilter::Info);

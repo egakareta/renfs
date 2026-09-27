@@ -288,9 +288,9 @@ dependencies = [
 
 [[package]]
 name = "examplify"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ed4857a9ce3d3913b87813002af15c9c6697bd4690e682324bf284d23479344"
+checksum = "7fe27f5bd6f316eb7aa4b2e6ae9a81468cf208fce51c52b88e760cb016bef9c6"
 dependencies = [
  "console_log",
  "env_logger",
