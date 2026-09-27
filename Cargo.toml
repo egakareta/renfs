@@ -17,7 +17,7 @@ tempfile = "3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 anyhow = { version = "1", optional = true }
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.23", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 dirs = "7"
 flate2 = { version = "1", optional = true }
