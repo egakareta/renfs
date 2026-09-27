@@ -97,10 +97,12 @@ pub fn write_stream_destroy(_stream: &WriteStream) -> io::Result<()> {
 
 pub struct Watcher(std::sync::Mutex<Option<notify::RecommendedWatcher>>);
 
+type WatchListener = Box<dyn FnMut(&str, &str) + Send>;
+
 pub fn watch(
     path: &str,
     options: WatchOptions,
-    mut listener: Box<dyn FnMut(&str, &str) + Send>,
+    mut listener: WatchListener,
 ) -> io::Result<Watcher> {
     use notify::Watcher as _;
     let watched = PathBuf::from(path);
