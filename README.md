@@ -90,8 +90,8 @@ in browsers.
 <details> <summary> <b>Are write operations durable?</b> </summary>
 
 For synchronous APIs of some browser backends like IndexedDB and OPFS, **no**. If you write to
-a file, then immediately after refresh the browser window, there is no guarantee that the data
-has been saved.
+a file then immediately refresh the browser window, there is no guarantee that your data has
+been saved.
 
 If you want durable operations, consider using asynchronous APIs such as `write_file` instead
 of `write_file_sync`.
