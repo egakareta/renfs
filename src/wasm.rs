@@ -943,6 +943,7 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn test_path(name: &str) -> String {
+        create_dir_all("/app").unwrap();
         format!("/app/renfs-{name}-{:x}", js_sys::Math::random().to_bits())
     }
 
