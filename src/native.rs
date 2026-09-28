@@ -678,21 +678,54 @@ fn permissions(mode: u32) -> fs::Permissions {
     fs::Permissions::from_mode(mode)
 }
 #[cfg(not(unix))]
-fn permissions(mode: u32) -> fs::Permissions {
-    fs::Permissions::from_readonly(mode & 0o222 == 0)
+fn permissions(mode: u32, mut permissions: fs::Permissions) -> fs::Permissions {
+    permissions.set_readonly(mode & 0o222 == 0);
+    permissions
 }
 
 pub fn chmod_sync(path: &str, mode: u32) -> io::Result<()> {
-    fs::set_permissions(path, permissions(mode))
+    #[cfg(unix)]
+    {
+        fs::set_permissions(path, permissions(mode))
+    }
+    #[cfg(not(unix))]
+    {
+        let permissions = permissions(mode, fs::metadata(path)?.permissions());
+        fs::set_permissions(path, permissions)
+    }
 }
 pub async fn chmod(path: &str, mode: u32) -> io::Result<()> {
-    async_fs::set_permissions(path, permissions(mode)).await
+    #[cfg(unix)]
+    {
+        async_fs::set_permissions(path, permissions(mode)).await
+    }
+    #[cfg(not(unix))]
+    {
+        let current = async_fs::metadata(path).await?.permissions();
+        async_fs::set_permissions(path, permissions(mode, current)).await
+    }
 }
 pub fn fchmod_sync(file: &File, mode: u32) -> io::Result<()> {
-    block_on(file.set_permissions(permissions(mode)))
+    #[cfg(unix)]
+    {
+        block_on(file.set_permissions(permissions(mode)))
+    }
+    #[cfg(not(unix))]
+    {
+        let current = block_on(file.metadata())?.permissions();
+        block_on(file.set_permissions(permissions(mode, current)))
+    }
 }
 pub async fn fchmod(file: &File, mode: u32) -> io::Result<()> {
-    file.set_permissions(permissions(mode)).await
+    #[cfg(unix)]
+    {
+        file.set_permissions(permissions(mode)).await
+    }
+    #[cfg(not(unix))]
+    {
+        let current = file.metadata().await?.permissions();
+        file.set_permissions(permissions(mode, current)).await
+    }
 }
 
 #[cfg(unix)]
@@ -808,11 +841,11 @@ pub fn futimes_sync(file: &File, atime: SystemTime, mtime: SystemTime) -> io::Re
     let (atime, mtime) = file_times(atime, mtime);
     let times = [
         libc::timespec {
-            tv_sec: atime.unix_seconds() as libc::time_t,
+            tv_sec: atime.unix_seconds() as _,
             tv_nsec: atime.nanoseconds() as _,
         },
         libc::timespec {
-            tv_sec: mtime.unix_seconds() as libc::time_t,
+            tv_sec: mtime.unix_seconds() as _,
             tv_nsec: mtime.nanoseconds() as _,
         },
     ];
