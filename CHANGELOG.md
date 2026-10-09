@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.1] - 2026-10-10
+
+### Fixed
+
+- Updated the lockfile to use `yoke-derive` 0.8.4 instead of the yanked 0.8.3 release.
+
 ## [0.2.0] - 2026-10-09
 
 ### Added
