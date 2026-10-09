@@ -55,7 +55,7 @@ wasm-bindgen-test = "0.3"
 libc = "0.2"
 
 [features]
-default = ["cli", "webfs"]
+default = ["cli", "webfs", "zenfs"]
 cli = [
   "dep:anyhow",
   "dep:base64",
@@ -68,3 +68,4 @@ cli = [
   "dep:url",
 ]
 webfs = ["dep:webfs"]
+zenfs = []

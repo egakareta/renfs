@@ -1416,10 +1416,12 @@ pub async fn dir_close(dir: &Dir) -> Result<(), JsValue> {
     Ok(())
 }
 
+#[cfg(not(all(feature = "webfs", not(feature = "zenfs"))))]
 pub fn opendir_sync(path: &str) -> Result<super::api::Dir, JsValue> {
     call_fs("opendirSync", &[JsValue::from_str(path)]).map(super::api::Dir::from_inner)
 }
 
+#[cfg(not(all(feature = "webfs", not(feature = "zenfs"))))]
 pub async fn opendir(path: &str) -> Result<super::api::Dir, JsValue> {
     call_fs_promise("opendir", &[JsValue::from_str(path)])
         .await
@@ -1565,7 +1567,7 @@ pub async fn unlink(path: &str) -> Result<(), JsValue> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(all(feature = "webfs", not(feature = "zenfs")))))]
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
@@ -1920,6 +1922,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(all(feature = "webfs", not(feature = "zenfs")))))]
 #[path = "implementation_tests.rs"]
 mod shared_tests;

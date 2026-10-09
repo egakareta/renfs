@@ -9,7 +9,7 @@ pub type Error = std::io::Error;
 #[cfg(target_arch = "wasm32")]
 /// The error type returned by filesystem operations on WebAssembly.
 ///
-/// This type wraps the JavaScript value thrown by the underlying filesystem.
+/// This type wraps an error raised by the active filesystem backend.
 #[derive(Debug)]
 pub struct Error(wasm_bindgen::JsValue);
 
@@ -26,13 +26,20 @@ impl std::fmt::Display for Error {
         if let Some(message) = self.0.as_string() {
             formatter.write_str(&message)
         } else {
-            write!(formatter, "JavaScript filesystem error: {:?}", self.0)
+            write!(formatter, "filesystem backend error: {:?}", self.0)
         }
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 impl std::error::Error for Error {}
+
+#[cfg(target_arch = "wasm32")]
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self(wasm_bindgen::JsValue::from_str(&error.to_string()))
+    }
+}
 
 /// The result type returned by filesystem operations.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -124,7 +131,7 @@ macro_rules! define_wasm_sync_wrappers {
             #[cfg(target_arch = "wasm32")]
             $(#[$documentation])*
             pub fn $name($($argument: $argument_type),*) -> Result<$output> {
-                implementation_result!(implementation::$implementation($($argument),*))
+                implementation_result!(crate::wasm_api::$implementation($($argument),*))
             }
         )*
     };
@@ -136,7 +143,7 @@ macro_rules! define_wasm_async_wrappers {
             #[cfg(target_arch = "wasm32")]
             $(#[$documentation])*
             pub async fn $name($($argument: $argument_type),*) -> Result<$output> {
-                implementation_result!(implementation::$implementation($($argument),*).await)
+                implementation_result!(crate::wasm_api::$implementation($($argument),*).await)
             }
         )*
     };
@@ -148,7 +155,7 @@ macro_rules! define_wasm_value_wrappers {
             #[cfg(target_arch = "wasm32")]
             $(#[$documentation])*
             pub fn $name() -> $output {
-                implementation::$implementation()
+                crate::wasm_api::$implementation()
             }
         )*
     };

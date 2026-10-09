@@ -16,7 +16,8 @@ to browser APIs like:
 - [IndexedDB](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API), and
 - [OPFS](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system).
 
-For convenience, [std::fs](https://doc.rust-lang.org/std/fs/index.html) is used on native platforms.
+For convenience, [std::fs](https://doc.rust-lang.org/std/fs/index.html) is used on native platforms,
+and if ZenFS is not set up will fall back to localStorage via [webfs](https://crates.io/crates/webfs).
 
 ## Usage
 
@@ -91,7 +92,9 @@ in browsers.
 
 For synchronous APIs of some browser backends like IndexedDB and OPFS, **no**. If you write to
 a file then immediately refresh the browser window, there is no guarantee that your data has
-been saved.
+been saved. This is a fundamental limitation of ZenFS.
+
+If you are using localStorage, you should be fine but this is subject to browser policy.
 
 If you want durable operations, consider using asynchronous APIs such as `write_file` instead
 of `write_file_sync`.
