@@ -42,7 +42,7 @@ run = "mise run test:native && mise run test:wasm"
 
 [tasks."test:native"]
 description = "Run .rs tests for native"
-run = "cargo test -- --nocapture"
+run = "cargo test --all-features -- --nocapture"
 
 [tasks."test:wasm"]
 description = "Run .rs tests for wasm"

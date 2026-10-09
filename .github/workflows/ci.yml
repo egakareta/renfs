@@ -101,6 +101,7 @@ jobs:
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: renfs
+          features: cli
           target: ${{ matrix.target }}
           build-tool: ${{ matrix.build_tool }}
           include: LICENSE,README.md
