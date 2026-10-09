@@ -3,14 +3,14 @@ name = "renfs"
 version = "0.1.0"
 edition = "2024"
 description = "Bindings for ZenFS: A filesystem, anywhere"
-license = "MIT"
-repository = "https://github.com/egakareta/renfs"
-homepage = "https://github.com/egakareta/renfs"
 documentation = "https://docs.rs/renfs"
 readme = "README.md"
-keywords = ["filesystem", "wasm", "browser", "zenfs", "bindings"]
+homepage = "https://github.com/egakareta/renfs"
+repository = "https://github.com/egakareta/renfs"
+license = "MIT"
+keywords = ["bindings", "browser", "filesystem", "wasm", "zenfs"]
 categories = ["filesystem", "wasm"]
-exclude = ["/AGENTS.md", "/.github/**"]
+exclude = ["/.github/**", "/AGENTS.md"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -37,7 +37,7 @@ glob = "0.3"
 notify = "8"
 regex = { version = "1", optional = true }
 tempfile = "3"
-tracing = { version = "0.1", optional = true }
+tracing = { version = "0.1", default-features = false, features = ["std"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 ureq = { version = "3", optional = true }
 url = { version = "2", optional = true }
