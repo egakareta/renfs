@@ -85,7 +85,7 @@ and that a lot of advanced filesystem APIs such as symlinking or file stats will
 
 <details> <summary> <b>Why use RenFS?</b> </summary>
 
-Crates such as [opfs](github.com/anchpop/opfs), [rexie](https://github.com/devashishdxt/rexie),
+Crates such as [opfs](https://github.com/anchpop/opfs), [rexie](https://github.com/devashishdxt/rexie),
 [idb](https://github.com/devashishdxt/idb) are locked into one browser API and call it a day.
 For a long time, this was the tradeoff developers had to make if they wanted to persist code in
 browsers.
