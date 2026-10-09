@@ -287,13 +287,6 @@ pub fn invalid_path_error(message: &str) -> JsValue {
     JsValue::from_str(message)
 }
 
-#[cfg(not(test))]
-#[wasm_bindgen(module = "@zenfs/core")]
-extern "C" {
-    #[wasm_bindgen(thread_local_v2, js_name = fs)]
-    static ZEN_FS: JsValue;
-}
-
 #[cfg(test)]
 #[wasm_bindgen(module = "https://esm.sh/@zenfs/core@2.7.6?bundle&target=es2022")]
 extern "C" {
@@ -301,6 +294,7 @@ extern "C" {
     static ZEN_FS: JsValue;
 }
 
+#[cfg(test)]
 macro_rules! zenfs_setup_imports {
     ($module:literal) => {
         #[wasm_bindgen(module = $module)]
@@ -364,7 +358,217 @@ macro_rules! zenfs_setup_imports {
 }
 
 #[cfg(not(test))]
-zenfs_setup_imports!("@zenfs/core");
+#[wasm_bindgen(inline_js = r#"
+function canResolveZenFs() {
+    try {
+        if (typeof import.meta.resolve === "function") {
+            import.meta.resolve("@zenfs/core");
+            return true;
+        }
+    } catch (_) {
+        return false;
+    }
+
+    try {
+        return [...document.querySelectorAll('script[type="importmap"]')]
+            .some((script) => Object.hasOwn(JSON.parse(script.textContent || "{}").imports || {}, "@zenfs/core"));
+    } catch (_) {
+        return false;
+    }
+}
+
+let zenfsModule = null;
+const zenfsModulePromise = canResolveZenFs()
+    ? import("@zenfs/core").then((module) => (zenfsModule = module, module)).catch(() => null)
+    : Promise.resolve(null);
+
+function requireZenFs() {
+    if (!zenfsModule) {
+        throw new Error("ZenFS is not available or has not finished loading");
+    }
+    return zenfsModule;
+}
+
+export function zenfs_is_configured() {
+    if (!zenfsModule) return false;
+    const mounts = zenfsModule.mounts;
+    return mounts instanceof Map ? mounts.size > 0 : Object.keys(mounts || {}).length > 0;
+}
+
+export function zenfs_get_export(name) {
+    return zenfsModule ? zenfsModule[name] : undefined;
+}
+
+export function zenfs_call_sync(name, args) {
+    const fn = requireZenFs()[name];
+    if (typeof fn !== "function") throw new TypeError(`ZenFS export ${name} is not a function`);
+    return fn(...args);
+}
+
+export async function zenfs_call_async(name, args) {
+    let module = zenfsModule || await zenfsModulePromise;
+    if (!module && canResolveZenFs()) {
+        module = await import("@zenfs/core").then((loaded) => (zenfsModule = loaded, loaded)).catch(() => null);
+    }
+    if (!module) throw new Error("ZenFS is not available; enable the webfs feature to use its fallback");
+    const fn = module[name];
+    if (typeof fn !== "function") throw new TypeError(`ZenFS export ${name} is not a function`);
+    return fn(...args);
+}
+"#)]
+extern "C" {
+    fn zenfs_is_configured() -> bool;
+    fn zenfs_get_export(name: &str) -> JsValue;
+    #[wasm_bindgen(catch)]
+    fn zenfs_call_sync(name: &str, args: &Array) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(catch)]
+    fn zenfs_call_async(name: &str, args: &Array) -> Result<js_sys::Promise, JsValue>;
+}
+
+#[cfg(not(test))]
+struct ZenFsExport(&'static str);
+
+#[cfg(not(test))]
+impl ZenFsExport {
+    fn with<R>(&self, f: impl FnOnce(&JsValue) -> R) -> R {
+        let value = zenfs_get_export(self.0);
+        f(&value)
+    }
+}
+
+#[cfg(not(test))]
+const ZEN_FS: ZenFsExport = ZenFsExport("fs");
+#[cfg(not(test))]
+const ZEN_MOUNTS: ZenFsExport = ZenFsExport("mounts");
+#[cfg(not(test))]
+const ZEN_PROMISES: ZenFsExport = ZenFsExport("promises");
+#[cfg(not(test))]
+const ZEN_DEFAULT: ZenFsExport = ZenFsExport("default");
+#[cfg(not(test))]
+const ZEN_VFS: ZenFsExport = ZenFsExport("vfs");
+#[cfg(not(test))]
+const ZEN_VERSION: ZenFsExport = ZenFsExport("version");
+#[cfg(not(test))]
+const ZEN_CONSTANTS: ZenFsExport = ZenFsExport("constants");
+
+#[cfg(not(test))]
+fn call_zenfs_sync(name: &str, args: &[JsValue]) -> Result<JsValue, JsValue> {
+    zenfs_call_sync(name, &Array::from_iter(args.iter().cloned()))
+}
+
+#[cfg(not(test))]
+fn call_zenfs_async(name: &str, args: &[JsValue]) -> Result<js_sys::Promise, JsValue> {
+    zenfs_call_async(name, &Array::from_iter(args.iter().cloned()))
+}
+
+#[cfg(all(not(test), feature = "webfs", feature = "zenfs"))]
+pub fn is_configured() -> bool {
+    zenfs_is_configured()
+}
+
+#[cfg(all(test, feature = "webfs", feature = "zenfs"))]
+pub fn is_configured() -> bool {
+    true
+}
+
+#[cfg(not(test))]
+fn zenfs_configure(configuration: &JsValue) -> Result<js_sys::Promise, JsValue> {
+    call_zenfs_async("configure", &[configuration.clone()])
+}
+
+#[cfg(not(test))]
+fn zenfs_configure_sync(configuration: &JsValue) -> Result<(), JsValue> {
+    call_zenfs_sync("configureSync", &[configuration.clone()]).map(|_| ())
+}
+
+#[cfg(not(test))]
+fn zenfs_configure_single(configuration: &JsValue) -> Result<js_sys::Promise, JsValue> {
+    call_zenfs_async("configureSingle", &[configuration.clone()])
+}
+
+#[cfg(not(test))]
+fn zenfs_configure_single_sync(configuration: &JsValue) -> Result<(), JsValue> {
+    call_zenfs_sync("configureSingleSync", &[configuration.clone()]).map(|_| ())
+}
+
+#[cfg(not(test))]
+fn zenfs_configure_file_system(
+    filesystem: &JsValue,
+    configuration: &JsValue,
+) -> Result<(), JsValue> {
+    call_zenfs_sync(
+        "configureFileSystem",
+        &[filesystem.clone(), configuration.clone()],
+    )
+    .map(|_| ())
+}
+
+#[cfg(not(test))]
+fn zenfs_resolve_mount_config(configuration: &JsValue) -> Result<js_sys::Promise, JsValue> {
+    call_zenfs_async("resolveMountConfig", &[configuration.clone()])
+}
+
+#[cfg(not(test))]
+fn zenfs_resolve_mount_config_sync(configuration: &JsValue) -> Result<JsValue, JsValue> {
+    call_zenfs_sync("resolveMountConfigSync", &[configuration.clone()])
+}
+
+#[cfg(not(test))]
+fn zenfs_resolve_remote_mount(
+    channel: &JsValue,
+    configuration: &JsValue,
+) -> Result<js_sys::Promise, JsValue> {
+    call_zenfs_async(
+        "resolveRemoteMount",
+        &[channel.clone(), configuration.clone()],
+    )
+}
+
+#[cfg(not(test))]
+fn zenfs_mount(mount_point: &str, filesystem: &JsValue) -> Result<(), JsValue> {
+    call_zenfs_sync(
+        "mount",
+        &[JsValue::from_str(mount_point), filesystem.clone()],
+    )
+    .map(|_| ())
+}
+
+#[cfg(not(test))]
+fn zenfs_umount(mount_point: &str) -> Result<(), JsValue> {
+    call_zenfs_sync("umount", &[JsValue::from_str(mount_point)]).map(|_| ())
+}
+
+#[cfg(not(test))]
+fn zenfs_sync() -> Result<js_sys::Promise, JsValue> {
+    call_zenfs_async("sync", &[])
+}
+
+#[cfg(not(test))]
+fn zenfs_wait_online(worker: &JsValue) -> Result<js_sys::Promise, JsValue> {
+    call_zenfs_async("waitOnline", &[worker.clone()])
+}
+
+#[cfg(not(test))]
+fn zenfs_attach_fs(channel: &JsValue, filesystem: &JsValue) -> Result<(), JsValue> {
+    call_zenfs_sync("attachFS", &[channel.clone(), filesystem.clone()]).map(|_| ())
+}
+
+#[cfg(not(test))]
+fn zenfs_detach_fs(channel: &JsValue, filesystem: &JsValue) -> Result<(), JsValue> {
+    call_zenfs_sync("detachFS", &[channel.clone(), filesystem.clone()]).map(|_| ())
+}
+
+#[cfg(not(test))]
+fn zenfs_glob_to_regex(pattern: &str) -> Result<JsValue, JsValue> {
+    call_zenfs_sync("globToRegex", &[JsValue::from_str(pattern)])
+}
+
+#[cfg(not(test))]
+fn zenfs_normalize_path(path: &str) -> Result<String, JsValue> {
+    call_zenfs_sync("normalizePath", &[JsValue::from_str(path)])?
+        .as_string()
+        .ok_or_else(|| JsValue::from_str("ZenFS normalizePath did not return a string"))
+}
 
 #[cfg(test)]
 zenfs_setup_imports!("https://esm.sh/@zenfs/core@2.7.6?bundle&target=es2022");
@@ -1416,16 +1620,34 @@ pub async fn dir_close(dir: &Dir) -> Result<(), JsValue> {
     Ok(())
 }
 
-#[cfg(not(all(feature = "webfs", not(feature = "zenfs"))))]
-pub fn opendir_sync(path: &str) -> Result<super::api::Dir, JsValue> {
-    call_fs("opendirSync", &[JsValue::from_str(path)]).map(super::api::Dir::from_inner)
+pub fn open_dir_sync(path: &str) -> Result<Dir, JsValue> {
+    call_fs("opendirSync", &[JsValue::from_str(path)])
 }
 
-#[cfg(not(all(feature = "webfs", not(feature = "zenfs"))))]
+pub async fn open_dir(path: &str) -> Result<Dir, JsValue> {
+    call_fs_promise("opendir", &[JsValue::from_str(path)]).await
+}
+
+#[cfg(not(feature = "webfs"))]
+pub fn opendir_sync(path: &str) -> Result<super::api::Dir, JsValue> {
+    open_dir_sync(path).map(super::api::Dir::from_inner)
+}
+
+#[cfg(not(feature = "webfs"))]
 pub async fn opendir(path: &str) -> Result<super::api::Dir, JsValue> {
-    call_fs_promise("opendir", &[JsValue::from_str(path)])
-        .await
-        .map(super::api::Dir::from_inner)
+    open_dir(path).await.map(super::api::Dir::from_inner)
+}
+
+#[cfg(all(test, feature = "webfs", feature = "zenfs"))]
+pub fn opendir_sync(path: &str) -> Result<super::api::Dir, JsValue> {
+    let inner = crate::implementation::Dir::ZenFs(open_dir_sync(path)?);
+    Ok(super::api::Dir::from_inner(inner))
+}
+
+#[cfg(all(test, feature = "webfs", feature = "zenfs"))]
+pub async fn opendir(path: &str) -> Result<super::api::Dir, JsValue> {
+    let inner = crate::implementation::Dir::ZenFs(open_dir(path).await?);
+    Ok(super::api::Dir::from_inner(inner))
 }
 
 pub fn rmdir_sync(path: &str) -> Result<(), JsValue> {

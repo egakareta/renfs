@@ -295,10 +295,16 @@ async_sync_aliases! {
     fn symlink(target: &str, link: &str) -> () = symlink_sync;
 }
 
-pub fn opendir_sync(path: &str) -> io::Result<crate::api::Dir> {
-    fs::read_dir(path).map(crate::api::Dir::from_inner)
+pub fn open_dir_sync(path: &str) -> io::Result<Dir> {
+    fs::read_dir(path)
 }
 
+#[cfg(not(all(feature = "webfs", feature = "zenfs")))]
+pub fn opendir_sync(path: &str) -> io::Result<crate::api::Dir> {
+    open_dir_sync(path).map(crate::api::Dir::from_inner)
+}
+
+#[cfg(not(all(feature = "webfs", feature = "zenfs")))]
 pub async fn opendir(path: &str) -> io::Result<crate::api::Dir> {
     opendir_sync(path)
 }
