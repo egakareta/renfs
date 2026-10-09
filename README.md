@@ -16,8 +16,7 @@ to browser APIs like:
 - [IndexedDB](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API), and
 - [OPFS](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system).
 
-For convenience, [std::fs](https://doc.rust-lang.org/std/fs/index.html) is used on native platforms,
-and if ZenFS is not set up will fall back to localStorage via [webfs](https://crates.io/crates/webfs).
+For convenience, [std::fs](https://doc.rust-lang.org/std/fs/index.html) is used on native platforms and works out-of-the-box on the web with [webfs](https://crates.io/crates/webfs).
 
 ## Usage
 
@@ -73,6 +72,14 @@ await configure({
 
 export default () => ({});
 ```
+
+### When you just need something simple
+
+You can just not set up ZenFS. If the `webfs` feature is enabled (it is by default), RenFS can
+run on the web without any additional setup with localStorage.
+
+The obvious tradeoffs are that localStorage is not a very generous API in terms of storage size
+and that a lot of advanced filesystem APIs such as symlinking or file stats will error or no-op.
 
 ## Q & A
 
