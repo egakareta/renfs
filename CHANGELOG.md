@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0] - 2026-10-09
+
+### Added
+
+- Added a localStorage-backed WebFS fallback for WebAssembly. With the default `webfs` feature, RenFS now works without ZenFS setup and uses ZenFS automatically when it is configured.
+- Added the standalone `webfs` crate, with a `std::fs`-style API in browsers and `std::fs` re-exports on native targets.
+- Added a setupless browser example demonstrating persisted application data.
+
+### Documentation
+
+- Documented setupless browser usage, the localStorage fallback, and its storage and durability limitations.
+
 ## [0.1.0] - 2026-09-27
 
 ### Added
