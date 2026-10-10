@@ -1,8 +1,15 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cookie Workshop</title>
+    <link rel="icon" href="data:," />
+    <script type="importmap">
+      { "imports": { "env": "./env.js" } }
+    </script>
+    <link data-trunk rel="rust" href="../Cargo.toml" data-bin="cookie_clicker" data-wasm-opt="0" />
+    <link data-trunk rel="copy-dir" href="./generated" data-target-path="." />
     <style>
       html,
       body {
@@ -19,10 +26,7 @@
     </style>
   </head>
   <body>
-    <canvas id="glcanvas" tabindex="1"></canvas>
-    <script src="https://not-fl3.github.io/miniquad-samples/mq_js_bundle.js"></script>
-    <script>
-      load("cookie_clicker.wasm");
-    </script>
+    <canvas id="glcanvas" tabindex="0" aria-label="Cookie Workshop game"></canvas>
+    <script data-trunk src="./generated/gl.js"></script>
   </body>
 </html>

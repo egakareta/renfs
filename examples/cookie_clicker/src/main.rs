@@ -1,5 +1,31 @@
 use macroquad::prelude::*;
 
+/// miniquad shim so it can work with trunk
+#[cfg(target_arch = "wasm32")]
+mod browser {
+    use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen(inline_js = r#"
+export function initialize(wasm) {
+    globalThis.wasm_memory = wasm.memory;
+    globalThis.wasm_exports = wasm;
+}
+"#)]
+    extern "C" {
+        fn initialize(wasm: JsValue);
+    }
+
+    #[wasm_bindgen(start)]
+    #[allow(
+        clippy::main_recursion,
+        reason = "this hook replaces automatic main startup"
+    )]
+    pub fn start() {
+        initialize(wasm_bindgen::exports());
+        super::main();
+    }
+}
+
 const SAVE_FILE: &str = "save.txt";
 const PANEL: Color = Color::from_rgba(43, 31, 26, 255);
 const PANEL_LIGHT: Color = Color::from_rgba(57, 41, 34, 255);

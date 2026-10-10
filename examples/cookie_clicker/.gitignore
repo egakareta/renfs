@@ -1,1 +1,4 @@
 **/*.wasm
+/web/pkg/
+/web/generated/
+/dist/

@@ -2,7 +2,23 @@
 name = "cookie_clicker"
 version = "0.1.0"
 edition = "2024"
+default-run = "cookie_clicker"
+
+[[bin]]
+name = "web-assets"
+path = "tools/web_assets.rs"
+required-features = ["web-assets"]
 
 [dependencies]
 macroquad = "0.4"
 renfs = { path = "../..", default-features = false, features = ["webfs"] }
+serde_json = { version = "1", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+
+[features]
+web-assets = ["dep:serde_json"]

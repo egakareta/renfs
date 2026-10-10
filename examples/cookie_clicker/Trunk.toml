@@ -1,0 +1,21 @@
+[build]
+target = "web/index.html"
+dist = "dist"
+locked = true
+
+[[hooks]]
+stage = "pre_build"
+command = "cargo"
+command_arguments = [
+  "run",
+  "--quiet",
+  "--locked",
+  "--features",
+  "web-assets",
+  "--bin",
+  "web-assets",
+]
+
+[watch]
+watch = ["."]
+ignore = ["web/generated"]
