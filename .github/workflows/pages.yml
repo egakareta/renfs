@@ -1,0 +1,42 @@
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+      - id: pages
+        uses: actions/configure-pages@v5
+      - working-directory: examples/cookie_clicker
+        env:
+          PUBLIC_URL: ${{ steps.pages.outputs.base_path }}
+        run: trunk build --release --public-url "${PUBLIC_URL}/"
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: examples/cookie_clicker/dist
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
