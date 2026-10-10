@@ -1,0 +1,11 @@
+[build]
+target = "index.html"
+dist = "bin/dist"
+
+[[hooks]]
+stage = "pre_build"
+command = "renfs"
+command_arguments = ["bin/zenfs.js"]
+
+[watch]
+ignore = ["bin"]

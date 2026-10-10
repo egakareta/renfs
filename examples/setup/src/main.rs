@@ -1,7 +1,3 @@
-//! Run this in
-//! - native `cargo run --example simple`
-//! - web `trunk serve --example simple`
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     examplify::init().with_log_level(examplify::log::LevelFilter::Info);
 
