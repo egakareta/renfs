@@ -136,9 +136,9 @@ fn open_descriptor_read_write_and_metadata_apis_work() {
         crate::fs::writev_sync(&mut file, &write_buffers).unwrap(),
         15
     );
+    crate::fs::fdatasync_sync(&mut file).unwrap();
     assert_eq!(crate::fs::fstat_sync(&file).unwrap().len(), 15);
     crate::fs::ftruncate_sync(&mut file, 4).unwrap();
-    crate::fs::fdatasync_sync(&mut file).unwrap();
     crate::fs::fsync_sync(&mut file).unwrap();
     crate::fs::close_sync(file).unwrap();
     assert_eq!(read_file_sync(&path).unwrap(), b"desc");
