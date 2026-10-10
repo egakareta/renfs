@@ -1,0 +1,8 @@
+[package]
+name = "cookie_clicker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+macroquad = "0.4"
+renfs = { path = "../..", default-features = false, features = ["webfs"] }
