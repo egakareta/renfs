@@ -31,7 +31,7 @@ cargo install renfs --locked # or cargo binstall renfs
 renfs dist/zenfs.js
 ```
 
-Otherwise, you can always download it manually in this repository [here](https://github.com/egakareta/renfs/tree/master/vendor).
+Otherwise, you can download it manually from https://github.com/egakareta/renfs_vendor.
 
 ### Configure imports
 
@@ -110,4 +110,6 @@ of `write_file_sync`.
 
 ## License
 
-Licensed under the [MIT License](https://github.com/egakareta/renfs/blob/master/LICENSE).
+RenFS is licensed under the [MIT License](https://github.com/egakareta/renfs/blob/master/LICENSE).
+
+[ZenFS](https://github.com/zen-fs/core) is licensed under the [LGPL 3.0 or later](https://www.gnu.org/licenses/lgpl-3.0.html) and [COPYING.md](https://github.com/zen-fs/core/blob/main/COPYING.md). Copyright © James Prevett and other ZenFS contributors.

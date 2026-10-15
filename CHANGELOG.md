@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2] - 2026-10-15
+
+### Changed
+
+- Removed vendored bundles from crates.io releases.
+- Added licensing disclaimer to generated bundles and README.
+- Move vendored bundles to a separate [LGPL-licensed vendor repository](https://github.com/egakareta/renfs_vendor).
+
 ## [0.2.1] - 2026-10-10
 
 ### Fixed

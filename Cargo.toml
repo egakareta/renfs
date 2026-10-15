@@ -10,7 +10,7 @@ repository = "https://github.com/egakareta/renfs"
 license = "MIT"
 keywords = ["bindings", "browser", "filesystem", "wasm", "zenfs"]
 categories = ["filesystem", "wasm"]
-exclude = ["/.github/**", "/AGENTS.md"]
+exclude = ["/.github/**", "/AGENTS.md", "/vendor/**"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
