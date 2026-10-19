@@ -38,7 +38,7 @@ run = "cargo clippy --all-targets --all-features --workspace -- -D warnings"
 
 [tasks.test]
 description = "Run .rs tests for native and wasm"
-run = "mise run test:native && mise run test:wasm"
+run = "mise run test:native && mise run test:wasm32 && mise run test:wasm64"
 
 [tasks."test:native"]
 description = "Run .rs tests for native"
