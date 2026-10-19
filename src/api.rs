@@ -2,25 +2,25 @@ use std::path::{Component, Path, PathBuf};
 
 use super::implementation;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
 /// The error type returned by filesystem operations on native platforms.
 pub type Error = std::io::Error;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 /// The error type returned by filesystem operations on WebAssembly.
 ///
 /// This type wraps an error raised by the active filesystem backend.
 #[derive(Debug)]
 pub struct Error(wasm_bindgen::JsValue);
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 impl From<wasm_bindgen::JsValue> for Error {
     fn from(value: wasm_bindgen::JsValue) -> Self {
         Self(value)
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 impl std::fmt::Display for Error {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(message) = self.0.as_string() {
@@ -31,10 +31,10 @@ impl std::fmt::Display for Error {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 impl std::error::Error for Error {}
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
         Self(wasm_bindgen::JsValue::from_str(&error.to_string()))
@@ -45,12 +45,12 @@ impl From<std::io::Error> for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 fn invalid_path_error(message: &str) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
     {
         implementation::invalid_path_error(message)
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     {
         implementation::invalid_path_error(message).into()
     }
@@ -58,12 +58,12 @@ fn invalid_path_error(message: &str) -> Error {
 
 macro_rules! implementation_result {
     ($operation:expr) => {{
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
         {
             $operation
         }
 
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
         {
             $operation.map_err(Into::into)
         }
@@ -128,7 +128,7 @@ macro_rules! define_bool_option_setters {
 macro_rules! define_wasm_sync_wrappers {
     ($($(#[$documentation:meta])* $name:ident($($argument:ident: $argument_type:ty),*) -> $output:ty = $implementation:ident;)*) => {
         $(
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
             $(#[$documentation])*
             pub fn $name($($argument: $argument_type),*) -> Result<$output> {
                 implementation_result!(crate::wasm_api::$implementation($($argument),*))
@@ -140,7 +140,7 @@ macro_rules! define_wasm_sync_wrappers {
 macro_rules! define_wasm_async_wrappers {
     ($($(#[$documentation:meta])* $name:ident($($argument:ident: $argument_type:ty),*) -> $output:ty = $implementation:ident;)*) => {
         $(
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
             $(#[$documentation])*
             pub async fn $name($($argument: $argument_type),*) -> Result<$output> {
                 implementation_result!(crate::wasm_api::$implementation($($argument),*).await)
@@ -152,7 +152,7 @@ macro_rules! define_wasm_async_wrappers {
 macro_rules! define_wasm_value_wrappers {
     ($($(#[$documentation:meta])* $name:ident() -> $output:ty = $implementation:ident;)*) => {
         $(
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
             $(#[$documentation])*
             pub fn $name() -> $output {
                 crate::wasm_api::$implementation()
@@ -963,12 +963,12 @@ macro_rules! define_file_api {
                 $(#[$documentation])*
                 fn $operation(&self, $($path: &str),* $(, $arg: $arg_type)*) -> Result<$output> {
                     $(let $path = self.resolve_path($path)?;)*
-                    #[cfg(not(target_arch = "wasm32"))]
+                    #[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
                     {
                         implementation::$operation($(&$path,)* $($arg),*)
                     }
 
-                    #[cfg(target_arch = "wasm32")]
+                    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
                     {
                         implementation::$operation($(&$path,)* $($arg),*).map_err(Into::into)
                     }
@@ -1039,7 +1039,7 @@ macro_rules! define_file_api {
                 Blob, Dir, File, FileOps, Metadata, OpenOptions, Result, RootFileSystem, StatFs, TempDir, Watcher, WatchOptions, WatchFileOptions, ReadStream, ReadStreamOptions, WriteStream, WriteStreamOptions,
             };
 
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
             use wasm_bindgen::JsValue;
             use crate::implementation;
 
@@ -1431,7 +1431,7 @@ pub fn app_dir(name: &str) -> Result<Directory> {
     Ok(Directory { path })
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(all(target_family = "wasm", not(target_os = "wasi")))))]
 mod tests {
     use super::*;
     use tempfile::tempdir;

@@ -1,0 +1,2 @@
+[target.wasm64-unknown-unknown]
+rustflags = ["-C", "link-arg=--max-memory=8589934592"]

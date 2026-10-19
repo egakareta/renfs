@@ -348,7 +348,7 @@ fn create_symlink(from: &Path, to: &Path) -> io::Result<()> {
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = target;
+        let _ = (target, to);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "copying symbolic links is unsupported on this platform",

@@ -6,12 +6,12 @@ description = "A std::fs-like filesystem for localStorage"
 readme = "README.md"
 license = "MIT"
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+[target.'cfg(all(target_family = "wasm", not(target_os = "wasi")))'.dependencies]
 base64 = "0.22"
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["Storage", "Window"] }
 
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+[target.'cfg(all(target_family = "wasm", not(target_os = "wasi")))'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 
 [dev-dependencies]

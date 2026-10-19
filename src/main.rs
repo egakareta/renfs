@@ -1,7 +1,7 @@
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
 mod cli;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
 fn main() -> std::process::ExitCode {
     match cli::run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -15,5 +15,5 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 fn main() {}

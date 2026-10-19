@@ -44,9 +44,15 @@ run = "mise run test:native && mise run test:wasm"
 description = "Run .rs tests for native"
 run = "cargo test --all-features -- --nocapture"
 
-[tasks."test:wasm"]
-description = "Run .rs tests for wasm"
-run = "wasm-pack test --headless --chrome -- -- --nocapture"
+[tasks."test:wasm32"]
+description = "Run .rs tests for wasm32"
+run = "wasm-pack test --headless --chrome"
+env = { RUST_TEST_NOCAPTURE = 1 }
+
+[tasks."test:wasm64"]
+description = "Run .rs tests for wasm64"
+run = "wasm-pack test --mode no-install --headless --chrome --target wasm64-unknown-unknown"
+env = { CARGO_UNSTABLE_BUILD_STD = "std,panic_abort", RUSTC_BOOTSTRAP = 1, RUST_TEST_NOCAPTURE = 1 }
 
 [tasks.vendor]
 description = "Regenerate vendored dependencies"

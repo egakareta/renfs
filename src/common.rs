@@ -7,9 +7,9 @@ use std::{
 
 use super::api::{Metadata, TempDir};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
 use std::fs as platform_fs;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 use webfs::fs as platform_fs;
 
 /// Constructs an invalid-input error used by filesystem operations.
@@ -64,7 +64,7 @@ pub fn normalize_path(path: &str) -> io::Result<String> {
 
 /// Converts a glob pattern into a regular-expression source string.
 pub fn glob_to_regex(pattern: &str) -> io::Result<String> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
     glob::Pattern::new(pattern).map_err(|error| invalid_path_error(&error.to_string()))?;
 
     let mut result = String::from("^");
@@ -108,11 +108,11 @@ pub fn glob_to_regex(pattern: &str) -> io::Result<String> {
 
 /// Returns whether a path exists, preserving errors from the filesystem.
 pub fn exists_sync(path: &str) -> io::Result<bool> {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     {
         platform_fs::try_exists(path)
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
     {
         Path::new(path).try_exists()
     }
@@ -208,7 +208,7 @@ fn create_symlink(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 fn create_symlink(_from: &Path, _to: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -216,7 +216,7 @@ fn create_symlink(_from: &Path, _to: &Path) -> io::Result<()> {
     ))
 }
 
-#[cfg(not(any(unix, windows, target_arch = "wasm32")))]
+#[cfg(not(any(unix, windows, all(target_family = "wasm", not(target_os = "wasi")))))]
 fn create_symlink(_from: &Path, _to: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -355,7 +355,7 @@ pub fn symlink_sync(target: &str, link: &str) -> io::Result<()> {
             std::os::windows::fs::symlink_file(target, link)
         }
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     {
         let _ = (target, link);
         Err(io::Error::new(
@@ -363,7 +363,7 @@ pub fn symlink_sync(target: &str, link: &str) -> io::Result<()> {
             "symbolic links are not supported by webfs",
         ))
     }
-    #[cfg(not(any(unix, windows, target_arch = "wasm32")))]
+    #[cfg(not(any(unix, windows, all(target_family = "wasm", not(target_os = "wasi")))))]
     {
         let _ = (target, link);
         Err(io::Error::new(
@@ -404,14 +404,14 @@ pub fn lstat_sync(path: &str) -> io::Result<Metadata> {
 /// Creates the named application directory.
 pub fn app_dir(name: &str) -> io::Result<String> {
     validate_app_name(name)?;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
     let base = dirs::data_local_dir().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "could not determine the application data directory",
         )
     })?;
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     let base = PathBuf::from("/");
 
     let path = base.join(name);
@@ -445,7 +445,7 @@ pub fn mkdtemp_disposable_sync(prefix: &str) -> io::Result<TempDir> {
 
 /// Creates a uniquely named temporary directory by appending a suffix to `prefix`.
 pub fn mkdtemp_sync(prefix: &str) -> io::Result<String> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
     {
         let path = Path::new(prefix);
         let parent = path
@@ -462,7 +462,7 @@ pub fn mkdtemp_sync(prefix: &str) -> io::Result<String> {
                 .keep(),
         )
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
     {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -488,14 +488,14 @@ pub fn mkdtemp_sync(prefix: &str) -> io::Result<String> {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 #[path = "webfs.rs"]
 mod webfs_impl;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
 pub use webfs_impl::*;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(all(target_family = "wasm", not(target_os = "wasi")))))]
 mod tests {
     use super::*;
 
@@ -506,7 +506,7 @@ mod tests {
         assert_eq!(glob_to_regex("**/*.rs").unwrap(), "^(?:.*/)?[^/]*\\.rs$");
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
     #[test]
     fn app_directory_name_validation_is_shared() {
         assert!(validate_app_name("example-app").is_ok());

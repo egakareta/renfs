@@ -3,13 +3,13 @@ use std::path::PathBuf;
 
 struct TestDirectory {
     path: PathBuf,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
     _directory: tempfile::TempDir,
 }
 
 impl TestDirectory {
     fn new(_name: &str) -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
         {
             let directory = tempfile::tempdir().unwrap();
             Self {
@@ -18,7 +18,7 @@ impl TestDirectory {
             }
         }
 
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
         {
             let path = PathBuf::from(format!(
                 "/app/renfs-{_name}-{:x}",
@@ -34,8 +34,11 @@ impl TestDirectory {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(
+    all(target_family = "wasm", not(target_os = "wasi")),
+    wasm_bindgen_test::wasm_bindgen_test
+)]
+#[cfg_attr(not(all(target_family = "wasm", not(target_os = "wasi"))), test)]
 fn filesystem_operations_round_trip_text_binary_and_directories() {
     let directory = TestDirectory::new("filesystem");
     let nested = directory.join("nested/directory");
@@ -75,8 +78,11 @@ fn filesystem_operations_round_trip_text_binary_and_directories() {
     assert!(!exists_sync(renamed_path).unwrap());
 }
 
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(
+    all(target_family = "wasm", not(target_os = "wasi")),
+    wasm_bindgen_test::wasm_bindgen_test
+)]
+#[cfg_attr(not(all(target_family = "wasm", not(target_os = "wasi"))), test)]
 fn create_dir_only_creates_one_level_and_rejects_existing_paths() {
     let directory = TestDirectory::new("create-dir");
     let missing_parent = directory.join("missing/child");
@@ -88,8 +94,11 @@ fn create_dir_only_creates_one_level_and_rejects_existing_paths() {
     assert!(create_dir(&child).is_err());
 }
 
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(
+    all(target_family = "wasm", not(target_os = "wasi")),
+    wasm_bindgen_test::wasm_bindgen_test
+)]
+#[cfg_attr(not(all(target_family = "wasm", not(target_os = "wasi"))), test)]
 fn file_access_copy_and_truncate_apis_work() {
     let directory = TestDirectory::new("file-apis");
     let source = directory.join("source.txt");
@@ -119,8 +128,11 @@ fn file_access_copy_and_truncate_apis_work() {
     );
 }
 
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(
+    all(target_family = "wasm", not(target_os = "wasi")),
+    wasm_bindgen_test::wasm_bindgen_test
+)]
+#[cfg_attr(not(all(target_family = "wasm", not(target_os = "wasi"))), test)]
 fn open_descriptor_read_write_and_metadata_apis_work() {
     let directory = TestDirectory::new("file-descriptor");
     let path = directory.join("opened.bin");
@@ -161,7 +173,7 @@ fn open_descriptor_read_write_and_metadata_apis_work() {
     crate::fs::close_sync(file).unwrap();
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
 #[test]
 fn asynchronous_filesystem_apis_complete_file_operations() {
     futures_lite::future::block_on(async {
