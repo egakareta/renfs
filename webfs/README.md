@@ -11,7 +11,7 @@ fn main() -> Result<(), std::io::Error> {
     fs::create_dir_all("notes")?;
     fs::write("notes/today.txt", "Hello from the browser")?;
     let text = fs::read_to_string("notes/today.txt")?;
-    log::info!("{}", text);
+    println!("{}", text);
     Ok(())
 }
 ```

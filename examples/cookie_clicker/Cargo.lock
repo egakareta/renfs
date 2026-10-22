@@ -689,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "renfs"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-fs",
  "dirs",
@@ -939,7 +939,7 @@ dependencies = [
 
 [[package]]
 name = "webfs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "wasm-bindgen",

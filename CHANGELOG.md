@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0] - 2026-10-22
+
+### Added
+
+- Added support for wasm64 browser targets and WASI targets.
+- Added wasm64 filesystem tests to CI.
+
+### Changed
+
+- Browser WebAssembly uses the JavaScript-backed filesystem dependencies, while WASI uses the standard filesystem backend.
+
 ## [0.2.2] - 2026-10-15
 
 ### Changed

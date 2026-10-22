@@ -1,6 +1,6 @@
 [package]
 name = "webfs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A std::fs-like filesystem for localStorage"
 readme = "README.md"
