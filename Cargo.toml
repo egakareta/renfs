@@ -7,7 +7,7 @@ documentation = "https://docs.rs/renfs"
 readme = "README.md"
 homepage = "https://github.com/egakareta/renfs"
 repository = "https://github.com/egakareta/renfs"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 keywords = ["bindings", "browser", "filesystem", "wasm", "zenfs"]
 categories = ["filesystem", "wasm"]
 exclude = ["/.github/**", "/AGENTS.md", "/vendor/**"]
@@ -24,10 +24,18 @@ required-features = ["cli"]
 examplify = "0.3"
 tempfile = "3"
 
-# Dependencies for the standard-filesystem backend, including WASI.
+[target.'cfg(all(target_family = "wasm", not(target_os = "wasi")))'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+webfs = { path = "webfs", version = "0.1.1", optional = true }
+
+[target.'cfg(all(target_family = "wasm", not(target_os = "wasi")))'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
 [target.'cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))'.dependencies]
 anyhow = { version = "1", optional = true }
-async-fs = "2.2"
+async-fs = "2"
 base64 = { version = "0.23", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 dirs = "7"
@@ -42,16 +50,6 @@ tracing = { version = "0.1", default-features = false, features = ["std"], optio
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 ureq = { version = "3", optional = true }
 url = { version = "2", optional = true }
-
-# JavaScript-backed filesystem dependencies are for browser WebAssembly targets.
-[target.'cfg(all(target_family = "wasm", not(target_os = "wasi")))'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-webfs = { path = "webfs", version = "0.1.1", optional = true }
-
-[target.'cfg(all(target_family = "wasm", not(target_os = "wasi")))'.dev-dependencies]
-wasm-bindgen-test = "0.3"
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"
