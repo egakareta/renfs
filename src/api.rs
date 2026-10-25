@@ -1775,9 +1775,10 @@ mod tests {
         assert_eq!(opened.read_sync().unwrap(), None);
         opened.close_sync().unwrap();
         assert!(opened.read_sync().is_err());
+        let expected_realpath = temp.path().join("nested/deep").canonicalize().unwrap();
         assert_eq!(
             dir.realpath_sync("nested/deep").unwrap(),
-            temp.path().join("nested/deep").to_str().unwrap()
+            expected_realpath.to_str().unwrap()
         );
         assert_eq!(
             dir.glob_sync("nested/*").unwrap(),
