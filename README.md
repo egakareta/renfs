@@ -110,6 +110,6 @@ of `write_file_sync`.
 
 ## License
 
-RenFS is licensed under the [MIT License](https://github.com/egakareta/renfs/blob/master/LICENSE).
+Dual-licensed under the [MIT License](https://opensource.org/licenses/MIT) and the [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0). Choose whichever you prefer. This license only applies to RenFS code.
 
 [ZenFS](https://github.com/zen-fs/core) is licensed under the [LGPL 3.0 or later](https://www.gnu.org/licenses/lgpl-3.0.html) and [COPYING.md](https://github.com/zen-fs/core/blob/main/COPYING.md). Copyright © James Prevett and other ZenFS contributors.
