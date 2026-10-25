@@ -1,0 +1,8 @@
+{
+  "rust-analyzer.linkedProjects": [
+    "Cargo.toml",
+    "examples/cookie_clicker/Cargo.toml",
+    "examples/setup/Cargo.toml",
+    "examples/setupless/Cargo.toml"
+  ]
+}
