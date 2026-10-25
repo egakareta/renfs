@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.1] - 2026-10-25
+
+### Changed
+
+- Added Apache-2.0 as an alternative to MIT and included both license texts in release archives.
+- Updated dependencies.
+- Expanded native CI coverage to Linux, Windows, and macOS.
+
+### Fixed
+
+- Preserved root semantics when normalizing rooted paths, including rooted paths that are not absolute.
+
 ## [0.3.0] - 2026-10-22
 
 ### Added
