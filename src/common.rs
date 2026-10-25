@@ -37,14 +37,14 @@ pub(crate) fn path_string(path: PathBuf) -> io::Result<String> {
 /// Normalizes path components while preserving whether the path is absolute.
 pub fn normalize_path(path: &str) -> io::Result<String> {
     let mut parts = Vec::new();
-    let absolute = Path::new(path).is_absolute();
+    let rooted = Path::new(path).has_root();
     for component in Path::new(path).components() {
         match component {
             std::path::Component::CurDir | std::path::Component::RootDir => {}
             std::path::Component::ParentDir if parts.last().is_some_and(|part| *part != "..") => {
                 parts.pop();
             }
-            std::path::Component::ParentDir if !absolute => parts.push(".."),
+            std::path::Component::ParentDir if !rooted => parts.push(".."),
             std::path::Component::Normal(part) => parts.push(
                 part.to_str()
                     .ok_or_else(|| invalid_path_error("path is not valid UTF-8"))?,
@@ -53,7 +53,7 @@ pub fn normalize_path(path: &str) -> io::Result<String> {
         }
     }
     let joined = parts.join("/");
-    Ok(if absolute {
+    Ok(if rooted {
         format!("/{joined}")
     } else if joined.is_empty() {
         ".".to_owned()

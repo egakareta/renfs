@@ -1775,7 +1775,12 @@ mod tests {
         assert_eq!(opened.read_sync().unwrap(), None);
         opened.close_sync().unwrap();
         assert!(opened.read_sync().is_err());
-        let expected_realpath = temp.path().join("nested/deep").canonicalize().unwrap();
+        let expected_realpath = temp
+            .path()
+            .join("nested")
+            .join("deep")
+            .canonicalize()
+            .unwrap();
         assert_eq!(
             dir.realpath_sync("nested/deep").unwrap(),
             expected_realpath.to_str().unwrap()
@@ -1784,7 +1789,8 @@ mod tests {
             dir.glob_sync("nested/*").unwrap(),
             vec![
                 temp.path()
-                    .join("nested/deep")
+                    .join("nested")
+                    .join("deep")
                     .to_str()
                     .unwrap()
                     .trim_start_matches('/')
