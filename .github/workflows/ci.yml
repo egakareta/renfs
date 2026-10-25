@@ -108,6 +108,6 @@ jobs:
           features: cli
           target: ${{ matrix.target }}
           build-tool: ${{ matrix.build_tool }}
-          include: LICENSE,README.md
+          include: LICENSE-APACHE,LICENSE-MIT,README.md
           checksum: sha256
           locked: true
